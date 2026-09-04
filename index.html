@@ -1,4 +1,15 @@
 <!--
+AvatarX production-hardened build
+- microphone permission preflight
+- HTTPS/security checks
+- Supabase retry + timeout handling
+- Anam WebRTC lifecycle handling
+- Safari/iOS audio unlock
+- deterministic cleanup/reconnect
+- responsive avatar/control collision fix
+- local-only synthetic regression mode via ?selftest=1
+-->
+<!--
 AvatarX responsive transparent-avatar build.
 Pinned to @anam-ai/js-sdk 4.27.0 for reproducible production behavior.
 -->
@@ -529,8 +540,18 @@ Pinned to @anam-ai/js-sdk 4.27.0 for reproducible production behavior.
   </main>
 
   <script type="module">
-    import { createClient } from "https://esm.sh/@anam-ai/js-sdk@4.27.0";
+    /*
+      AvatarX production connection layer
+      - microphone preflight
+      - secure-context checks
+      - retry/timeout handling for Supabase
+      - Anam connection lifecycle events
+      - Safari/iOS audio unlock
+      - deterministic cleanup and reconnect support
+      - local self-test mode at ?selftest=1 (localhost/file only)
+    */
 
+    const SDK_URL = "https://esm.sh/@anam-ai/js-sdk@4.27.0";
     const SESSION_ENDPOINT = "https://cfthqsvxidzxflbvhxkk.supabase.co/functions/v1/anam-eleven-session";
     const AVATAR_ID = "0caf57ab-3da9-4d27-b356-53837508aaf6";
     const AGENT_ID = "agent_0301ky516eb3emwsy22td2f8z96g";
@@ -546,11 +567,35 @@ Pinned to @anam-ai/js-sdk 4.27.0 for reproducible production behavior.
     const micStatus = document.getElementById("micStatus");
     const controlBar = document.querySelector(".control-bar");
 
+    const params = new URLSearchParams(location.search);
+    const SELF_TEST = params.has("selftest") && (location.hostname === "localhost" || location.hostname === "127.0.0.1" || location.protocol === "file:");
+
     let anamClient = null;
+    let sdkModule = null;
     let isStarting = false;
     let isConnected = false;
+    let isStopping = false;
     let renderStop = null;
     let fitRaf = 0;
+    let startGeneration = 0;
+    let audioContext = null;
+
+    function sleep(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    function timeoutPromise(ms, message = "Operation timed out.") {
+      return new Promise((_, reject) => {
+        const id = setTimeout(() => {
+          clearTimeout(id);
+          reject(new Error(message));
+        }, ms);
+      });
+    }
+
+    async function withTimeout(promise, ms, message) {
+      return Promise.race([promise, timeoutPromise(ms, message)]);
+    }
 
     function getSafeBottomPx() {
       const probe = document.createElement("div");
@@ -574,12 +619,17 @@ Pinned to @anam-ai/js-sdk 4.27.0 for reproducible production behavior.
 
       const sideGutter = isPhone ? 8 : isTablet ? 14 : 20;
       const topGutter = isShort ? 4 : isPhone ? 8 : 12;
-      const controlHeight = controlBar?.getBoundingClientRect().height || 0;
+      const controlRect = controlBar?.getBoundingClientRect();
+      const controlHeight = controlRect?.height || 0;
       const safeBottom = getSafeBottomPx();
-
-      /* Keep the avatar's feet clear of the conversation controls on every device. */
-      const controlGap = isShort ? 8 : isPhone ? 16 : isTablet ? 12 : 12;
-      const reserveBottom = Math.ceil(controlHeight + safeBottom + controlGap);
+      const controlGap = isShort ? 8 : isPhone ? 16 : 12;
+      /* Include the control bar's actual bottom offset as well as its height.
+         This prevents the avatar's feet from slipping behind the controls on
+         desktop/tablet layouts where the bar sits above the viewport edge. */
+      const measuredBottomOffset = controlRect
+        ? Math.max(0, stageHeight - controlRect.bottom)
+        : safeBottom;
+      const reserveBottom = Math.ceil(measuredBottomOffset + controlHeight + controlGap);
 
       const availableWidth = Math.max(1, stageWidth - sideGutter * 2);
       const availableHeight = Math.max(1, stageHeight - topGutter - reserveBottom);
@@ -589,13 +639,7 @@ Pinned to @anam-ai/js-sdk 4.27.0 for reproducible production behavior.
 
       const containScale = Math.min(availableWidth / videoWidth, availableHeight / videoHeight);
       const coverScale = Math.max(availableWidth / videoWidth, availableHeight / videoHeight);
-
-      /* Portrait screens intentionally use a center/bottom cover fit. Avatar streams are
-         usually landscape with large keyed-out side areas; cover makes the person large
-         enough for phone/tablet UX while the stage safely clips only the side margins. */
-      const scale = isPortraitViewport && sourceRatio > 1
-        ? coverScale
-        : containScale;
+      const scale = isPortraitViewport && sourceRatio > 1 ? coverScale : containScale;
 
       const displayWidth = Math.max(1, Math.round(videoWidth * scale));
       const displayHeight = Math.max(1, Math.round(videoHeight * scale));
@@ -642,7 +686,7 @@ Pinned to @anam-ai/js-sdk 4.27.0 for reproducible production behavior.
       canvas.classList.remove("active");
     }
 
-    function setConnectingUI() {
+    function setConnectingUI(message = "Preparing secure connection…") {
       startButton.hidden = false;
       stopButton.hidden = true;
       startButton.disabled = true;
@@ -651,7 +695,7 @@ Pinned to @anam-ai/js-sdk 4.27.0 for reproducible production behavior.
       idleState.classList.add("hidden");
       connectingState.classList.add("visible");
       micStatus.classList.remove("visible");
-      connectingText.textContent = "Creating a secure session…";
+      connectingText.textContent = message;
     }
 
     function setConnectedUI() {
@@ -667,33 +711,159 @@ Pinned to @anam-ai/js-sdk 4.27.0 for reproducible production behavior.
       scheduleAvatarFit(canvas);
     }
 
-    async function createSession() {
+    function friendlyError(error) {
+      const name = error?.name || "";
+      const raw = String(error?.message || error || "Unable to start the conversation.");
+      const lower = raw.toLowerCase();
+
+      if (name === "NotAllowedError" || lower.includes("permission denied") || lower.includes("microphone permission")) {
+        return "Microphone access is required. Allow microphone access for this site and try again.";
+      }
+      if (name === "NotFoundError" || lower.includes("requested device not found")) {
+        return "No microphone was detected. Connect or enable a microphone and try again.";
+      }
+      if (name === "NotReadableError" || lower.includes("could not start audio source")) {
+        return "Your microphone is busy or unavailable. Close other apps using it and try again.";
+      }
+      if (lower.includes("secure context") || lower.includes("https")) {
+        return "Microphone access requires HTTPS. Open this page from your secure GitHub Pages/production URL.";
+      }
+      if (lower.includes("failed to fetch") || lower.includes("networkerror") || lower.includes("network request failed")) {
+        return "The secure session service could not be reached. Check your internet connection and the Supabase function CORS settings, then try again.";
+      }
+      if (lower.includes("session endpoint") || lower.includes("session token")) {
+        return raw;
+      }
+      if (lower.includes("webrtc") || lower.includes("ice") || lower.includes("connection closed")) {
+        return "The real-time media connection could not be established. Check firewall/VPN restrictions and try again.";
+      }
+      if (lower.includes("sdk")) {
+        return "The avatar SDK could not be loaded. Check the network connection and content-security policy, then try again.";
+      }
+      return raw;
+    }
+
+    async function unlockAudio() {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+      try {
+        audioContext ||= new AudioContextClass();
+        if (audioContext.state === "suspended") await audioContext.resume();
+      } catch (error) {
+        console.warn("AudioContext unlock skipped:", error);
+      }
+    }
+
+    async function microphonePreflight() {
+      if (SELF_TEST) return;
+
+      const localHost = ["localhost", "127.0.0.1", "::1"].includes(location.hostname);
+      if (!window.isSecureContext && !localHost) {
+        throw new Error("Microphone access requires a secure context (HTTPS).");
+      }
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("This browser does not provide microphone access. Use a current version of Chrome, Edge or Safari.");
+      }
+
+      setConnectingUI("Checking microphone…");
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        },
+        video: false
+      });
+      stream.getTracks().forEach(track => track.stop());
+    }
+
+    async function loadSdk() {
+      if (sdkModule) return sdkModule;
+      if (SELF_TEST) {
+        sdkModule = createSelfTestSdk();
+        return sdkModule;
+      }
+
+      setConnectingUI("Loading avatar engine…");
+      try {
+        sdkModule = await withTimeout(import(SDK_URL), 20000, "Avatar SDK load timed out.");
+      } catch (error) {
+        throw new Error(`Avatar SDK could not be loaded: ${error?.message || error}`);
+      }
+
+      if (typeof sdkModule?.createClient !== "function") {
+        throw new Error("Avatar SDK loaded without createClient().");
+      }
+      return sdkModule;
+    }
+
+    async function fetchSessionOnce(signal) {
       const response = await fetch(SESSION_ENDPOINT, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        },
         body: JSON.stringify({ avatarId: AVATAR_ID, agentId: AGENT_ID }),
-        cache: "no-store"
+        cache: "no-store",
+        credentials: "omit",
+        mode: "cors",
+        signal
       });
 
-      let data;
-      try {
-        data = await response.json();
-      } catch {
-        throw new Error(`Session endpoint returned HTTP ${response.status} without valid JSON.`);
+      const raw = await response.text();
+      let data = null;
+      if (raw) {
+        try { data = JSON.parse(raw); } catch {}
       }
 
       if (!response.ok) {
-        throw new Error(data?.details || data?.error || `Session endpoint returned HTTP ${response.status}.`);
+        const detail = data?.details || data?.error || raw?.slice(0, 220) || `HTTP ${response.status}`;
+        const error = new Error(`Session endpoint returned ${response.status}: ${detail}`);
+        error.status = response.status;
+        throw error;
       }
 
-      if (!data?.success || !data?.sessionToken) {
-        throw new Error(data?.error || "Session endpoint did not return a valid Anam session token.");
+      const token = data?.sessionToken || data?.anamSessionToken || data?.token;
+      if (!token) {
+        throw new Error("Session endpoint responded successfully but did not return a sessionToken.");
       }
+      return token;
+    }
 
-      return data.sessionToken;
+    async function createSession() {
+      if (SELF_TEST) return "self-test-session-token";
+
+      setConnectingUI("Creating a secure session…");
+      let lastError = null;
+
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 20000);
+        try {
+          return await fetchSessionOnce(controller.signal);
+        } catch (error) {
+          lastError = error;
+          const retryableStatus = !error?.status || [408, 425, 429, 500, 502, 503, 504].includes(error.status);
+          if (attempt < 2 && retryableStatus) {
+            setConnectingUI("Session service is taking longer than expected. Retrying…");
+            await sleep(700);
+            continue;
+          }
+          if (error?.name === "AbortError") {
+            throw new Error("Session endpoint timed out. Please try again.");
+          }
+          throw error;
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      throw lastError || new Error("Unable to create a session.");
     }
 
     async function enableAvatarAudio() {
+      video.autoplay = true;
+      video.playsInline = true;
       video.muted = false;
       video.defaultMuted = false;
       video.volume = 1;
@@ -702,6 +872,7 @@ Pinned to @anam-ai/js-sdk 4.27.0 for reproducible production behavior.
         await video.play();
       } catch (firstError) {
         console.warn("Initial media playback was blocked; retrying.", firstError);
+        await unlockAudio();
         video.muted = false;
         video.volume = 1;
         await video.play();
@@ -714,12 +885,17 @@ Pinned to @anam-ai/js-sdk 4.27.0 for reproducible production behavior.
       for (const track of stream.getAudioTracks()) track.enabled = true;
     }
 
-    /*
-      Transparent avatar renderer.
-      Anam's documented transparent-background approach uses a green-screen avatar
-      plus browser-side chroma keying. If the stream is not green-screen, this shader
-      simply leaves most pixels opaque and the experience still works as a frameless video.
-    */
+    async function waitForMediaStream(timeoutMs = 12000) {
+      const started = performance.now();
+      while (performance.now() - started < timeoutMs) {
+        const stream = video.srcObject;
+        const hasVideoTrack = !!stream?.getVideoTracks?.().some(track => track.readyState === "live");
+        if (stream && (hasVideoTrack || video.videoWidth > 0)) return stream;
+        await sleep(100);
+      }
+      throw new Error("WebRTC connected but no live avatar video stream became available.");
+    }
+
     function useDirectVideoFallback(reason) {
       if (reason) console.warn(reason);
       video.style.cssText = "opacity:1;background:transparent;pointer-events:none;object-fit:fill;";
@@ -748,154 +924,130 @@ Pinned to @anam-ai/js-sdk 4.27.0 for reproducible production behavior.
       }
 
       try {
-
-      const vertexSource = `
-        attribute vec2 a_position;
-        attribute vec2 a_texCoord;
-        varying vec2 v_texCoord;
-        void main() {
-          gl_Position = vec4(a_position, 0.0, 1.0);
-          v_texCoord = a_texCoord;
-        }
-      `;
-
-      const fragmentSource = `
-        precision mediump float;
-        uniform sampler2D u_texture;
-        varying vec2 v_texCoord;
-
-        void main() {
-          vec4 color = texture2D(u_texture, v_texCoord);
-          float maxRB = max(color.r, color.b);
-          float dominance = color.g - maxRB;
-
-          /* Tuned for a clean green-screen source while keeping skin/clothing intact. */
-          float greenStrength = smoothstep(0.10, 0.28, dominance) * smoothstep(0.28, 0.62, color.g);
-          float alpha = 1.0 - greenStrength;
-
-          /* Reduce green spill on semi-transparent edge pixels. */
-          float despilledGreen = mix(color.g, maxRB, greenStrength * 0.82);
-          vec3 rgb = vec3(color.r, despilledGreen, color.b);
-
-          gl_FragColor = vec4(rgb, color.a * alpha);
-        }
-      `;
-
-      function compileShader(type, source) {
-        const shader = gl.createShader(type);
-        gl.shaderSource(shader, source);
-        gl.compileShader(shader);
-        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-          const info = gl.getShaderInfoLog(shader) || "Unknown shader error";
-          gl.deleteShader(shader);
-          throw new Error(info);
-        }
-        return shader;
-      }
-
-      const vertexShader = compileShader(gl.VERTEX_SHADER, vertexSource);
-      const fragmentShader = compileShader(gl.FRAGMENT_SHADER, fragmentSource);
-      const program = gl.createProgram();
-      gl.attachShader(program, vertexShader);
-      gl.attachShader(program, fragmentShader);
-      gl.linkProgram(program);
-
-      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        throw new Error(gl.getProgramInfoLog(program) || "Unable to link transparency shader.");
-      }
-
-      gl.useProgram(program);
-
-      const positions = new Float32Array([
-        -1, -1,  1, -1, -1,  1,
-        -1,  1,  1, -1,  1,  1
-      ]);
-      const texCoords = new Float32Array([
-         0, 1,  1, 1,  0, 0,
-         0, 0,  1, 1,  1, 0
-      ]);
-
-      const positionBuffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
-      const positionLocation = gl.getAttribLocation(program, "a_position");
-      gl.enableVertexAttribArray(positionLocation);
-      gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
-
-      const texCoordBuffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, texCoords, gl.STATIC_DRAW);
-      const texCoordLocation = gl.getAttribLocation(program, "a_texCoord");
-      gl.enableVertexAttribArray(texCoordLocation);
-      gl.vertexAttribPointer(texCoordLocation, 2, gl.FLOAT, false, 0, 0);
-
-      const texture = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, texture);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-
-      gl.clearColor(0, 0, 0, 0);
-      gl.disable(gl.DEPTH_TEST);
-      gl.disable(gl.BLEND);
-
-      let stopped = false;
-      let raf = 0;
-      let videoFrameCallback = 0;
-      const hasVideoFrameCallback = typeof video.requestVideoFrameCallback === "function";
-
-      function scheduleNextFrame() {
-        if (stopped) return;
-        if (hasVideoFrameCallback) {
-          videoFrameCallback = video.requestVideoFrameCallback(draw);
-        } else {
-          raf = requestAnimationFrame(draw);
-        }
-      }
-
-      function draw() {
-        if (stopped) return;
-
-        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth && video.videoHeight) {
-          if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            gl.viewport(0, 0, canvas.width, canvas.height);
-            scheduleAvatarFit(canvas);
+        const vertexSource = `
+          attribute vec2 a_position;
+          attribute vec2 a_texCoord;
+          varying vec2 v_texCoord;
+          void main() {
+            gl_Position = vec4(a_position, 0.0, 1.0);
+            v_texCoord = a_texCoord;
           }
+        `;
 
-          gl.clear(gl.COLOR_BUFFER_BIT);
-          gl.bindTexture(gl.TEXTURE_2D, texture);
-          try {
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
-            gl.drawArrays(gl.TRIANGLES, 0, 6);
-          } catch (error) {
-            console.warn("Avatar frame render skipped:", error);
+        const fragmentSource = `
+          precision mediump float;
+          uniform sampler2D u_texture;
+          varying vec2 v_texCoord;
+          void main() {
+            vec4 color = texture2D(u_texture, v_texCoord);
+            float maxRB = max(color.r, color.b);
+            float dominance = color.g - maxRB;
+            float greenStrength = smoothstep(0.10, 0.28, dominance) * smoothstep(0.28, 0.62, color.g);
+            float alpha = 1.0 - greenStrength;
+            float despilledGreen = mix(color.g, maxRB, greenStrength * 0.82);
+            gl_FragColor = vec4(color.r, despilledGreen, color.b, color.a * alpha);
           }
+        `;
+
+        function compileShader(type, source) {
+          const shader = gl.createShader(type);
+          gl.shaderSource(shader, source);
+          gl.compileShader(shader);
+          if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            const info = gl.getShaderInfoLog(shader) || "Unknown shader error";
+            gl.deleteShader(shader);
+            throw new Error(info);
+          }
+          return shader;
+        }
+
+        const vertexShader = compileShader(gl.VERTEX_SHADER, vertexSource);
+        const fragmentShader = compileShader(gl.FRAGMENT_SHADER, fragmentSource);
+        const program = gl.createProgram();
+        gl.attachShader(program, vertexShader);
+        gl.attachShader(program, fragmentShader);
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+          throw new Error(gl.getProgramInfoLog(program) || "Unable to link transparency shader.");
+        }
+        gl.useProgram(program);
+
+        const positions = new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]);
+        const texCoords = new Float32Array([0,1, 1,1, 0,0, 0,0, 1,1, 1,0]);
+
+        const positionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+        const positionLocation = gl.getAttribLocation(program, "a_position");
+        gl.enableVertexAttribArray(positionLocation);
+        gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+
+        const texCoordBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, texCoords, gl.STATIC_DRAW);
+        const texCoordLocation = gl.getAttribLocation(program, "a_texCoord");
+        gl.enableVertexAttribArray(texCoordLocation);
+        gl.vertexAttribPointer(texCoordLocation, 2, gl.FLOAT, false, 0, 0);
+
+        const texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        gl.clearColor(0, 0, 0, 0);
+        gl.disable(gl.DEPTH_TEST);
+        gl.disable(gl.BLEND);
+
+        let stopped = false;
+        let raf = 0;
+        let videoFrameCallback = 0;
+        const hasVideoFrameCallback = typeof video.requestVideoFrameCallback === "function";
+
+        function scheduleNextFrame() {
+          if (stopped) return;
+          if (hasVideoFrameCallback) videoFrameCallback = video.requestVideoFrameCallback(draw);
+          else raf = requestAnimationFrame(draw);
+        }
+
+        function draw() {
+          if (stopped) return;
+          if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth && video.videoHeight) {
+            if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+              canvas.width = video.videoWidth;
+              canvas.height = video.videoHeight;
+              gl.viewport(0, 0, canvas.width, canvas.height);
+              scheduleAvatarFit(canvas);
+            }
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            try {
+              gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+              gl.drawArrays(gl.TRIANGLES, 0, 6);
+            } catch (error) {
+              console.warn("Avatar frame render skipped:", error);
+            }
+          }
+          scheduleNextFrame();
         }
 
         scheduleNextFrame();
-      }
-
-      scheduleNextFrame();
-
-      renderStop = () => {
-        stopped = true;
-        cancelAnimationFrame(raf);
-        if (videoFrameCallback && typeof video.cancelVideoFrameCallback === "function") {
-          video.cancelVideoFrameCallback(videoFrameCallback);
-        }
-        gl.clear(gl.COLOR_BUFFER_BIT);
-        gl.deleteTexture(texture);
-        gl.deleteBuffer(positionBuffer);
-        gl.deleteBuffer(texCoordBuffer);
-        gl.deleteProgram(program);
-        gl.deleteShader(vertexShader);
-        gl.deleteShader(fragmentShader);
-        renderStop = null;
-      };
+        renderStop = () => {
+          stopped = true;
+          cancelAnimationFrame(raf);
+          if (videoFrameCallback && typeof video.cancelVideoFrameCallback === "function") {
+            video.cancelVideoFrameCallback(videoFrameCallback);
+          }
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          gl.deleteTexture(texture);
+          gl.deleteBuffer(positionBuffer);
+          gl.deleteBuffer(texCoordBuffer);
+          gl.deleteProgram(program);
+          gl.deleteShader(vertexShader);
+          gl.deleteShader(fragmentShader);
+          renderStop = null;
+        };
       } catch (rendererError) {
         console.warn("Transparent renderer failed. Falling back to direct frameless video.", rendererError);
         useDirectVideoFallback();
@@ -912,25 +1064,110 @@ Pinned to @anam-ai/js-sdk 4.27.0 for reproducible production behavior.
       canvas.classList.remove("active");
     }
 
-    async function startConversation() {
-      if (isStarting || isConnected) return;
+    function bindAnamLifecycle(client, sdk, generation) {
+      const AnamEvent = sdk?.AnamEvent;
+      if (!AnamEvent || typeof client?.addListener !== "function") return;
 
-      isStarting = true;
-      hideError();
-      setConnectingUI();
+      client.addListener(AnamEvent.CONNECTION_ESTABLISHED, () => {
+        if (generation !== startGeneration || isStopping) return;
+        setConnectingUI("Real-time connection established. Preparing avatar…");
+      });
+
+      if (AnamEvent.SESSION_READY) {
+        client.addListener(AnamEvent.SESSION_READY, () => {
+          if (generation !== startGeneration || isStopping) return;
+          console.log("AvatarX session ready.");
+        });
+      }
+
+      client.addListener(AnamEvent.CONNECTION_CLOSED, (reason, details) => {
+        if (generation !== startGeneration || isStopping) return;
+        const normalCode = sdk?.ConnectionClosedCode?.NORMAL;
+        const isNormal = reason === normalCode || String(reason).toLowerCase() === "normal";
+        console.warn("AvatarX connection closed:", reason, details || "");
+
+        if (isConnected) {
+          isConnected = false;
+          anamClient = null;
+          stopTransparentRenderer();
+          try { video.srcObject?.getTracks?.().forEach(track => track.stop()); } catch {}
+          video.srcObject = null;
+          setIdleUI();
+          if (!isNormal) showError(details || `Real-time connection closed (${reason ?? "unknown reason"}).`);
+        }
+      });
+    }
+
+    async function cleanupSession({ preserveError = false } = {}) {
+      isStopping = true;
+      startGeneration++;
+
+      const client = anamClient;
+      anamClient = null;
+      isConnected = false;
+      isStarting = false;
+
+      stopTransparentRenderer();
 
       try {
-        video.muted = false;
-        video.defaultMuted = false;
-        video.volume = 1;
+        if (client?.stopStreaming) await Promise.resolve(client.stopStreaming());
+      } catch (error) {
+        console.warn("Anam stop error:", error);
+      }
 
-        connectingText.textContent = "Creating a secure session…";
-        const sessionToken = await createSession();
+      try {
+        video.srcObject?.getTracks?.().forEach(track => track.stop());
+      } catch (error) {
+        console.warn("Media cleanup error:", error);
+      }
 
-        connectingText.textContent = "Starting your AI avatar…";
-        anamClient = createClient(sessionToken);
-        await anamClient.streamToVideoElement("avatar-video");
+      try { video.pause(); } catch {}
+      video.srcObject = null;
+      video.removeAttribute("style");
+      canvas.style.display = "";
+      isStopping = false;
+      setIdleUI();
+      if (!preserveError) hideError();
+    }
 
+    async function startConversation() {
+      if (isStarting || isConnected || isStopping) return;
+
+      const generation = ++startGeneration;
+      isStarting = true;
+      hideError();
+      setConnectingUI("Preparing secure connection…");
+
+      try {
+        if (!SELF_TEST && navigator.onLine === false) {
+          throw new Error("You appear to be offline. Reconnect to the internet and try again.");
+        }
+
+        /* Run user-gesture-dependent browser permissions first. */
+        await unlockAudio();
+        await microphonePreflight();
+        if (generation !== startGeneration) return;
+
+        /* Load SDK and create the short-lived session token in parallel. */
+        setConnectingUI("Creating secure avatar session…");
+        const [sdk, sessionToken] = await Promise.all([loadSdk(), createSession()]);
+        if (generation !== startGeneration) return;
+
+        setConnectingUI("Starting secure WebRTC session…");
+        anamClient = sdk.createClient(sessionToken, {
+          disableInputAudio: false
+        });
+        bindAnamLifecycle(anamClient, sdk, generation);
+
+        await withTimeout(
+          anamClient.streamToVideoElement("avatar-video"),
+          45000,
+          "WebRTC avatar connection timed out. Check firewall/VPN restrictions and try again."
+        );
+        if (generation !== startGeneration) return;
+
+        setConnectingUI("Starting video and audio…");
+        await waitForMediaStream(12000);
         await enableAvatarAudio();
         enableAudioTracks();
         startTransparentRenderer();
@@ -940,61 +1177,103 @@ Pinned to @anam-ai/js-sdk 4.27.0 for reproducible production behavior.
         setConnectedUI();
 
         setTimeout(() => {
+          if (!isConnected) return;
           video.muted = false;
           video.volume = 1;
           enableAudioTracks();
+          scheduleAvatarFit(canvas.style.display === "none" ? video : canvas);
         }, 1200);
 
-        console.log("AvatarX conversation started.");
+        console.log("AvatarX live session started successfully.");
       } catch (error) {
+        if (generation !== startGeneration) return;
         console.error("Start conversation failed:", error);
-        isStarting = false;
-        isConnected = false;
-
-        try { anamClient?.stopStreaming(); } catch (cleanupError) { console.warn("Cleanup error:", cleanupError); }
-        anamClient = null;
-        stopTransparentRenderer();
-
-        try {
-          const stream = video.srcObject;
-          stream?.getTracks().forEach(track => track.stop());
-        } catch {}
-
-        video.pause();
-        video.srcObject = null;
-
-        let message = error?.message || "Unable to start the conversation.";
-        if (message.toLowerCase().includes("microphone")) {
-          message = "Microphone access is required. Allow microphone access in your browser and try again.";
-        }
-
-        showError(message);
-        setIdleUI();
+        await cleanupSession({ preserveError: true });
+        showError(friendlyError(error));
       }
     }
 
-    function stopConversation() {
+    async function stopConversation() {
+      if (isStopping) return;
       startButton.disabled = true;
       stopButton.disabled = true;
-
-      try { anamClient?.stopStreaming(); } catch (error) { console.warn("Anam stop error:", error); }
-      anamClient = null;
-      isConnected = false;
-      isStarting = false;
-
-      stopTransparentRenderer();
-
-      try {
-        const stream = video.srcObject;
-        stream?.getTracks().forEach(track => track.stop());
-      } catch (error) {
-        console.warn("Media cleanup error:", error);
-      }
-
-      video.pause();
-      video.srcObject = null;
-      setIdleUI();
+      await cleanupSession();
       console.log("AvatarX conversation ended.");
+    }
+
+    /* Local-only synthetic stream for deterministic browser regression tests. */
+    function createSelfTestSdk() {
+      const events = {
+        CONNECTION_ESTABLISHED: "connection_established",
+        SESSION_READY: "session_ready",
+        CONNECTION_CLOSED: "connection_closed"
+      };
+
+      return {
+        AnamEvent: events,
+        ConnectionClosedCode: { NORMAL: "normal" },
+        createClient() {
+          const listeners = new Map();
+          let sourceCanvas = null;
+          let drawTimer = null;
+          let stream = null;
+          let stopped = false;
+
+          const emit = (name, ...args) => {
+            const handlers = listeners.get(name) || [];
+            handlers.forEach(fn => fn(...args));
+          };
+
+          return {
+            addListener(name, handler) {
+              const list = listeners.get(name) || [];
+              list.push(handler);
+              listeners.set(name, list);
+            },
+            async streamToVideoElement(id) {
+              const target = document.getElementById(id);
+              sourceCanvas = document.createElement("canvas");
+              sourceCanvas.width = 720;
+              sourceCanvas.height = 480;
+              const ctx = sourceCanvas.getContext("2d");
+              let frame = 0;
+
+              const draw = () => {
+                frame += 1;
+                ctx.fillStyle = "rgb(0,255,0)";
+                ctx.fillRect(0, 0, 720, 480);
+                const x = 360 + Math.sin(frame / 8) * 28;
+                ctx.fillStyle = "rgb(42,66,105)";
+                ctx.fillRect(x - 55, 145, 110, 245);
+                ctx.beginPath();
+                ctx.arc(x, 105, 48, 0, Math.PI * 2);
+                ctx.fillStyle = "rgb(218,168,130)";
+                ctx.fill();
+                ctx.fillStyle = "rgb(25,35,45)";
+                ctx.fillRect(x - 44, 385, 35, 90);
+                ctx.fillRect(x + 9, 385, 35, 90);
+              };
+
+              draw();
+              drawTimer = setInterval(draw, 33);
+              stream = sourceCanvas.captureStream(30);
+              target.srcObject = stream;
+              await target.play();
+              await sleep(120);
+              if (stopped) throw new Error("Self-test stopped.");
+              emit(events.CONNECTION_ESTABLISHED);
+              await sleep(80);
+              emit(events.SESSION_READY, "self-test-session");
+            },
+            async stopStreaming() {
+              stopped = true;
+              clearInterval(drawTimer);
+              stream?.getTracks().forEach(track => track.stop());
+              emit(events.CONNECTION_CLOSED, "normal");
+            }
+          };
+        }
+      };
     }
 
     startButton.addEventListener("click", startConversation);
@@ -1003,28 +1282,32 @@ Pinned to @anam-ai/js-sdk 4.27.0 for reproducible production behavior.
     video.addEventListener("loadedmetadata", () => {
       video.muted = false;
       video.volume = 1;
-      scheduleAvatarFit(canvas);
+      scheduleAvatarFit(canvas.style.display === "none" ? video : canvas);
     });
 
-    video.addEventListener("resize", () => scheduleAvatarFit(canvas));
-    window.addEventListener("resize", () => scheduleAvatarFit(canvas), { passive: true });
-    window.addEventListener("orientationchange", () => setTimeout(() => scheduleAvatarFit(canvas), 80), { passive: true });
-    window.visualViewport?.addEventListener("resize", () => scheduleAvatarFit(canvas), { passive: true });
-    window.visualViewport?.addEventListener("scroll", () => scheduleAvatarFit(canvas), { passive: true });
+    video.addEventListener("resize", () => scheduleAvatarFit(canvas.style.display === "none" ? video : canvas));
+    window.addEventListener("resize", () => scheduleAvatarFit(canvas.style.display === "none" ? video : canvas), { passive: true });
+    window.addEventListener("orientationchange", () => setTimeout(() => scheduleAvatarFit(canvas.style.display === "none" ? video : canvas), 80), { passive: true });
+    window.visualViewport?.addEventListener("resize", () => scheduleAvatarFit(canvas.style.display === "none" ? video : canvas), { passive: true });
+    window.visualViewport?.addEventListener("scroll", () => scheduleAvatarFit(canvas.style.display === "none" ? video : canvas), { passive: true });
 
     if ("ResizeObserver" in window) {
-      const resizeObserver = new ResizeObserver(() => scheduleAvatarFit(canvas));
+      const resizeObserver = new ResizeObserver(() => scheduleAvatarFit(canvas.style.display === "none" ? video : canvas));
       resizeObserver.observe(document.documentElement);
       if (controlBar) resizeObserver.observe(controlBar);
     }
 
-    window.addEventListener("beforeunload", () => {
-      try { anamClient?.stopStreaming(); } catch {}
+    window.addEventListener("offline", () => {
+      if (isConnected) showError("Internet connection lost. The avatar may disconnect until connectivity returns.");
+    });
+
+    window.addEventListener("pagehide", () => {
+      try { anamClient?.stopStreaming?.(); } catch {}
       stopTransparentRenderer();
     });
 
     setIdleUI();
-    console.log("AvatarX initialized.");
+    console.log(`AvatarX initialized${SELF_TEST ? " in local self-test mode" : ""}.`);
   </script>
 </body>
 </html>
