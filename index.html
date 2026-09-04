@@ -1,8 +1,6 @@
 <!--
-Responsive UX build
-Layout verified in Chromium at:
-1920x1080, 1366x768, 1024x768, 768x1024,
-390x844, 320x568 and 844x390.
+AvatarX responsive transparent-avatar build.
+Pinned to @anam-ai/js-sdk 4.27.0 for reproducible production behavior.
 -->
 <!DOCTYPE html>
 <html lang="en">
@@ -464,6 +462,35 @@ Layout verified in Chromium at:
       .btn:hover:not(:disabled) { transform: none; }
     }
 
+
+    /* =========================
+       VERIFIED UX HARDENING
+       Keep the avatar visually present without blocking the page underneath.
+    ========================== */
+    .avatar-app,
+    .avatar-stage,
+    #avatar-video,
+    #avatar-canvas,
+    .idle-state,
+    .connecting-state {
+      pointer-events: none !important;
+    }
+
+    .control-bar,
+    .control-bar *,
+    .error-box {
+      pointer-events: auto !important;
+    }
+
+    /* Prevent selection/drag gestures on the rendered avatar while users
+       interact with the page behind it. */
+    #avatar-canvas,
+    #avatar-video {
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-user-drag: none;
+    }
+
   </style>
 </head>
 <body>
@@ -539,7 +566,7 @@ Layout verified in Chromium at:
       const videoHeight = video.videoHeight || 0;
       if (!videoWidth || !videoHeight) return;
 
-      const stageWidth = Math.max(1, document.documentElement.clientWidth, window.innerWidth || 0);
+      const stageWidth = Math.max(1, window.visualViewport?.width || document.documentElement.clientWidth || window.innerWidth || 0);
       const stageHeight = Math.max(1, window.visualViewport?.height || document.documentElement.clientHeight || window.innerHeight || 0);
       const isPhone = stageWidth <= 600;
       const isTablet = stageWidth > 600 && stageWidth <= 1024;
@@ -550,13 +577,9 @@ Layout verified in Chromium at:
       const controlHeight = controlBar?.getBoundingClientRect().height || 0;
       const safeBottom = getSafeBottomPx();
 
-      /* Keep feet clear of the main action on small screens. On larger screens
-         allow a little more stage height while still avoiding the control bar. */
-      const reserveBottom = isPhone
-        ? Math.ceil(controlHeight + safeBottom + 16)
-        : isTablet
-          ? Math.ceil(controlHeight + safeBottom + 12)
-          : Math.ceil(Math.max(10, safeBottom + 8));
+      /* Keep the avatar's feet clear of the conversation controls on every device. */
+      const controlGap = isShort ? 8 : isPhone ? 16 : isTablet ? 12 : 12;
+      const reserveBottom = Math.ceil(controlHeight + safeBottom + controlGap);
 
       const availableWidth = Math.max(1, stageWidth - sideGutter * 2);
       const availableHeight = Math.max(1, stageHeight - topGutter - reserveBottom);
@@ -716,7 +739,7 @@ Layout verified in Chromium at:
         alpha: true,
         premultipliedAlpha: false,
         antialias: false,
-        preserveDrawingBuffer: true
+        preserveDrawingBuffer: false
       });
 
       if (!gl) {
@@ -820,6 +843,17 @@ Layout verified in Chromium at:
 
       let stopped = false;
       let raf = 0;
+      let videoFrameCallback = 0;
+      const hasVideoFrameCallback = typeof video.requestVideoFrameCallback === "function";
+
+      function scheduleNextFrame() {
+        if (stopped) return;
+        if (hasVideoFrameCallback) {
+          videoFrameCallback = video.requestVideoFrameCallback(draw);
+        } else {
+          raf = requestAnimationFrame(draw);
+        }
+      }
 
       function draw() {
         if (stopped) return;
@@ -842,14 +876,17 @@ Layout verified in Chromium at:
           }
         }
 
-        raf = requestAnimationFrame(draw);
+        scheduleNextFrame();
       }
 
-      draw();
+      scheduleNextFrame();
 
       renderStop = () => {
         stopped = true;
         cancelAnimationFrame(raf);
+        if (videoFrameCallback && typeof video.cancelVideoFrameCallback === "function") {
+          video.cancelVideoFrameCallback(videoFrameCallback);
+        }
         gl.clear(gl.COLOR_BUFFER_BIT);
         gl.deleteTexture(texture);
         gl.deleteBuffer(positionBuffer);
@@ -973,6 +1010,7 @@ Layout verified in Chromium at:
     window.addEventListener("resize", () => scheduleAvatarFit(canvas), { passive: true });
     window.addEventListener("orientationchange", () => setTimeout(() => scheduleAvatarFit(canvas), 80), { passive: true });
     window.visualViewport?.addEventListener("resize", () => scheduleAvatarFit(canvas), { passive: true });
+    window.visualViewport?.addEventListener("scroll", () => scheduleAvatarFit(canvas), { passive: true });
 
     if ("ResizeObserver" in window) {
       const resizeObserver = new ResizeObserver(() => scheduleAvatarFit(canvas));
