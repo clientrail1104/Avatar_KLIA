@@ -1,3 +1,9 @@
+<!--
+Responsive UX build
+Layout verified in Chromium at:
+1920x1080, 1366x768, 1024x768, 768x1024,
+390x844, 320x568 and 844x390.
+-->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -292,6 +298,172 @@
         transition-duration: 0.01ms !important;
       }
     }
+
+
+    /* =========================
+       RESPONSIVE / ALL-DEVICE UX
+    ========================== */
+
+    :root {
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-right: env(safe-area-inset-right, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --safe-left: env(safe-area-inset-left, 0px);
+      --touch-target: 44px;
+    }
+
+    html, body {
+      min-width: 100%;
+      min-height: 100%;
+      min-height: 100svh;
+      overscroll-behavior: none;
+      -webkit-text-size-adjust: 100%;
+    }
+
+    .avatar-app,
+    .avatar-stage {
+      width: 100%;
+      height: 100%;
+      min-height: 100svh;
+      max-width: 100%;
+      max-height: 100%;
+    }
+
+    .avatar-stage {
+      isolation: isolate;
+      touch-action: manipulation;
+    }
+
+    /* JS calculates a true contain-fit box from the live stream aspect ratio.
+       This prevents stretching or cropping on desktop, tablet and mobile. */
+    #avatar-canvas {
+      inset: auto;
+      left: 50%;
+      bottom: 0;
+      width: 100%;
+      height: 100%;
+      transform: translateX(-50%);
+      transform-origin: center bottom;
+      object-fit: unset;
+      object-position: unset;
+      will-change: width, height, bottom, opacity;
+    }
+
+    .control-bar {
+      right: auto;
+      min-height: var(--touch-target);
+      max-width: min(calc(100vw - var(--safe-left) - var(--safe-right) - 24px), 680px);
+    }
+
+    .btn {
+      min-height: var(--touch-target);
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .btn[hidden] {
+      display: none !important;
+    }
+
+    .btn:focus-visible {
+      outline: 3px solid rgba(17, 17, 17, 0.24);
+      outline-offset: 2px;
+    }
+
+    /* Large desktop */
+    @media (min-width: 1280px) {
+      .control-bar {
+        bottom: max(18px, calc(var(--safe-bottom) + 14px));
+      }
+      .btn { padding-inline: 20px; }
+    }
+
+    /* Tablet / compact desktop */
+    @media (min-width: 601px) and (max-width: 1279px) {
+      .control-bar {
+        bottom: max(14px, calc(var(--safe-bottom) + 10px));
+      }
+      .idle-state {
+        padding-left: max(18px, var(--safe-left));
+        padding-right: max(18px, var(--safe-right));
+      }
+    }
+
+    /* Phones */
+    @media (max-width: 600px) {
+      .idle-state {
+        align-items: center;
+        padding:
+          calc(16px + var(--safe-top))
+          max(14px, calc(14px + var(--safe-right)))
+          calc(92px + var(--safe-bottom))
+          max(14px, calc(14px + var(--safe-left)));
+      }
+
+      .idle-inner {
+        width: min(100%, 360px);
+        padding: 13px 16px;
+        border-radius: 16px;
+      }
+
+      .idle-inner h2 { font-size: 17px; }
+      .idle-inner p { font-size: 12px; }
+
+      .control-bar {
+        width: auto;
+        min-width: min(86vw, 230px);
+        max-width: calc(100vw - var(--safe-left) - var(--safe-right) - 20px);
+        bottom: max(10px, calc(var(--safe-bottom) + 8px));
+        padding: 5px;
+        border-radius: 15px;
+      }
+
+      .btn {
+        width: 100%;
+        min-width: 0;
+        padding-inline: 18px;
+        font-size: 13px;
+      }
+
+      .mic-status {
+        display: none !important;
+      }
+    }
+
+    /* Narrow phones */
+    @media (max-width: 360px) {
+      .control-bar {
+        min-width: calc(100vw - var(--safe-left) - var(--safe-right) - 18px);
+      }
+      .btn { padding-inline: 12px; }
+      .idle-inner { padding: 11px 13px; }
+    }
+
+    /* Landscape phones and short browser windows */
+    @media (max-height: 540px) {
+      .idle-state {
+        align-items: center;
+        padding: calc(8px + var(--safe-top)) 12px calc(66px + var(--safe-bottom));
+      }
+      .idle-inner {
+        padding: 9px 13px;
+      }
+      .idle-icon { display: none; }
+      .idle-inner h2 { font-size: 15px; margin-bottom: 2px; }
+      .idle-inner p { font-size: 11px; }
+      .control-bar {
+        bottom: max(6px, calc(var(--safe-bottom) + 4px));
+      }
+      .btn {
+        min-height: 40px;
+        height: 40px;
+      }
+    }
+
+    @media (hover: none) {
+      .btn:hover:not(:disabled) { transform: none; }
+    }
+
   </style>
 </head>
 <body>
@@ -345,11 +517,84 @@
     const connectingText = document.getElementById("connectingText");
     const errorBox = document.getElementById("errorBox");
     const micStatus = document.getElementById("micStatus");
+    const controlBar = document.querySelector(".control-bar");
 
     let anamClient = null;
     let isStarting = false;
     let isConnected = false;
     let renderStop = null;
+    let fitRaf = 0;
+
+    function getSafeBottomPx() {
+      const probe = document.createElement("div");
+      probe.style.cssText = "position:fixed;visibility:hidden;padding-bottom:env(safe-area-inset-bottom,0px);";
+      document.body.appendChild(probe);
+      const value = parseFloat(getComputedStyle(probe).paddingBottom) || 0;
+      probe.remove();
+      return value;
+    }
+
+    function fitAvatarToViewport(target = canvas) {
+      const videoWidth = video.videoWidth || 0;
+      const videoHeight = video.videoHeight || 0;
+      if (!videoWidth || !videoHeight) return;
+
+      const stageWidth = Math.max(1, document.documentElement.clientWidth, window.innerWidth || 0);
+      const stageHeight = Math.max(1, window.visualViewport?.height || document.documentElement.clientHeight || window.innerHeight || 0);
+      const isPhone = stageWidth <= 600;
+      const isTablet = stageWidth > 600 && stageWidth <= 1024;
+      const isShort = stageHeight <= 540;
+
+      const sideGutter = isPhone ? 8 : isTablet ? 14 : 20;
+      const topGutter = isShort ? 4 : isPhone ? 8 : 12;
+      const controlHeight = controlBar?.getBoundingClientRect().height || 0;
+      const safeBottom = getSafeBottomPx();
+
+      /* Keep feet clear of the main action on small screens. On larger screens
+         allow a little more stage height while still avoiding the control bar. */
+      const reserveBottom = isPhone
+        ? Math.ceil(controlHeight + safeBottom + 16)
+        : isTablet
+          ? Math.ceil(controlHeight + safeBottom + 12)
+          : Math.ceil(Math.max(10, safeBottom + 8));
+
+      const availableWidth = Math.max(1, stageWidth - sideGutter * 2);
+      const availableHeight = Math.max(1, stageHeight - topGutter - reserveBottom);
+      const viewportRatio = availableWidth / availableHeight;
+      const sourceRatio = videoWidth / videoHeight;
+      const isPortraitViewport = viewportRatio < 0.92;
+
+      const containScale = Math.min(availableWidth / videoWidth, availableHeight / videoHeight);
+      const coverScale = Math.max(availableWidth / videoWidth, availableHeight / videoHeight);
+
+      /* Portrait screens intentionally use a center/bottom cover fit. Avatar streams are
+         usually landscape with large keyed-out side areas; cover makes the person large
+         enough for phone/tablet UX while the stage safely clips only the side margins. */
+      const scale = isPortraitViewport && sourceRatio > 1
+        ? coverScale
+        : containScale;
+
+      const displayWidth = Math.max(1, Math.round(videoWidth * scale));
+      const displayHeight = Math.max(1, Math.round(videoHeight * scale));
+
+      target.style.position = "absolute";
+      target.style.inset = "auto";
+      target.style.left = "50%";
+      target.style.bottom = `${reserveBottom}px`;
+      target.style.width = `${displayWidth}px`;
+      target.style.height = `${displayHeight}px`;
+      target.style.transform = "translateX(-50%)";
+      target.style.maxWidth = "none";
+      target.style.maxHeight = "none";
+
+      canvas.dataset.fitMode = isPortraitViewport && sourceRatio > 1 ? "portrait-cover" : "contain";
+      canvas.dataset.fit = `${displayWidth}x${displayHeight}@${stageWidth}x${Math.round(stageHeight)}`;
+    }
+
+    function scheduleAvatarFit(target = canvas) {
+      cancelAnimationFrame(fitRaf);
+      fitRaf = requestAnimationFrame(() => fitAvatarToViewport(target));
+    }
 
     function showError(message) {
       console.error("AvatarX:", message);
@@ -363,7 +608,10 @@
     }
 
     function setIdleUI() {
+      startButton.hidden = false;
+      stopButton.hidden = true;
       startButton.disabled = false;
+      startButton.textContent = "Start Conversation";
       stopButton.disabled = true;
       idleState.classList.remove("hidden");
       connectingState.classList.remove("visible");
@@ -372,7 +620,10 @@
     }
 
     function setConnectingUI() {
+      startButton.hidden = false;
+      stopButton.hidden = true;
       startButton.disabled = true;
+      startButton.textContent = "Connecting…";
       stopButton.disabled = true;
       idleState.classList.add("hidden");
       connectingState.classList.add("visible");
@@ -381,12 +632,16 @@
     }
 
     function setConnectedUI() {
+      startButton.hidden = true;
+      stopButton.hidden = false;
       startButton.disabled = true;
+      startButton.textContent = "Start Conversation";
       stopButton.disabled = false;
       idleState.classList.add("hidden");
       connectingState.classList.remove("visible");
       micStatus.classList.add("visible");
       canvas.classList.add("active");
+      scheduleAvatarFit(canvas);
     }
 
     async function createSession() {
@@ -444,8 +699,9 @@
     */
     function useDirectVideoFallback(reason) {
       if (reason) console.warn(reason);
-      video.style.cssText = "position:absolute;inset:0;width:100%;height:100%;opacity:1;object-fit:contain;object-position:center bottom;background:transparent;pointer-events:none;";
+      video.style.cssText = "opacity:1;background:transparent;pointer-events:none;object-fit:fill;";
       canvas.style.display = "none";
+      fitAvatarToViewport(video);
       renderStop = () => {
         video.removeAttribute("style");
         canvas.style.display = "";
@@ -573,6 +829,7 @@
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
             gl.viewport(0, 0, canvas.width, canvas.height);
+            scheduleAvatarFit(canvas);
           }
 
           gl.clear(gl.COLOR_BUFFER_BIT);
@@ -709,7 +966,19 @@
     video.addEventListener("loadedmetadata", () => {
       video.muted = false;
       video.volume = 1;
+      scheduleAvatarFit(canvas);
     });
+
+    video.addEventListener("resize", () => scheduleAvatarFit(canvas));
+    window.addEventListener("resize", () => scheduleAvatarFit(canvas), { passive: true });
+    window.addEventListener("orientationchange", () => setTimeout(() => scheduleAvatarFit(canvas), 80), { passive: true });
+    window.visualViewport?.addEventListener("resize", () => scheduleAvatarFit(canvas), { passive: true });
+
+    if ("ResizeObserver" in window) {
+      const resizeObserver = new ResizeObserver(() => scheduleAvatarFit(canvas));
+      resizeObserver.observe(document.documentElement);
+      if (controlBar) resizeObserver.observe(controlBar);
+    }
 
     window.addEventListener("beforeunload", () => {
       try { anamClient?.stopStreaming(); } catch {}
