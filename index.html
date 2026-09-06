@@ -487,6 +487,175 @@
       -webkit-user-drag: none;
     }
 
+
+    /* =========================
+       VERIFIED FLIGHT RESULT
+       The avatar fit function reserves vertical space when this panel opens,
+       so the flight information sits below the visible avatar rather than
+       covering the persona.
+    ========================== */
+
+    .flight-source-frame {
+      position: fixed;
+      width: 1px;
+      height: 1px;
+      left: -9999px;
+      top: -9999px;
+      border: 0;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .flight-result {
+      position: fixed;
+      left: 50%;
+      bottom: max(72px, calc(var(--safe-bottom) + 68px));
+      transform: translateX(-50%) translateY(10px);
+      width: min(calc(100vw - var(--safe-left) - var(--safe-right) - 24px), 860px);
+      z-index: 66;
+      padding: 12px;
+      border-radius: 18px;
+      background: rgba(255,255,255,.94);
+      border: 1px solid rgba(255,255,255,.82);
+      box-shadow: 0 14px 38px rgba(0,0,0,.15);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 180ms ease, transform 180ms ease, visibility 180ms ease;
+    }
+
+    .flight-result.visible {
+      opacity: 1;
+      visibility: visible;
+      transform: translateX(-50%) translateY(0);
+      pointer-events: auto;
+    }
+
+    .flight-result-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 9px;
+    }
+
+    .flight-result-title {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 850;
+      letter-spacing: -.01em;
+    }
+
+    .flight-result-source {
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .flight-result-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 6px;
+    }
+
+    .flight-detail {
+      min-width: 0;
+      padding: 7px 8px;
+      border-radius: 11px;
+      background: rgba(245,247,249,.92);
+      border: 1px solid rgba(20,28,38,.06);
+    }
+
+    .flight-detail-label {
+      display: block;
+      margin-bottom: 2px;
+      color: var(--muted);
+      font-size: 7px;
+      font-weight: 850;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .flight-detail-value {
+      display: block;
+      min-width: 0;
+      color: var(--text);
+      font-size: 10px;
+      line-height: 1.25;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+
+    .flight-detail-subvalue {
+      display: block;
+      margin-top: 1px;
+      color: var(--muted);
+      font-size: 8px;
+      line-height: 1.2;
+      font-weight: 650;
+      overflow-wrap: anywhere;
+    }
+
+    .flight-status-value {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .flight-status-value::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      flex: 0 0 auto;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .flight-result.verification-error {
+      border-color: rgba(183,47,47,.18);
+      background: rgba(255,247,247,.96);
+    }
+
+    .flight-result.verification-error .flight-result-title,
+    .flight-result.verification-error .flight-detail-value {
+      color: var(--danger);
+    }
+
+    .flight-verification-message {
+      margin: 0;
+      color: #5e626a;
+      font-size: 11px;
+      line-height: 1.45;
+      font-weight: 650;
+    }
+
+    @media (max-width: 760px) {
+      .flight-result {
+        bottom: max(70px, calc(var(--safe-bottom) + 66px));
+        padding: 9px;
+        border-radius: 15px;
+      }
+      .flight-result-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+      .flight-detail { padding: 6px; }
+      .flight-detail-label { font-size: 6px; }
+      .flight-detail-value { font-size: 9px; }
+      .flight-detail-subvalue { font-size: 7px; }
+      .flight-result-source { display: none; }
+    }
+
+    @media (max-width: 430px) {
+      .flight-result-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .flight-result { max-height: 38vh; overflow-y: auto; }
+    }
+
+    @media (max-height: 650px) {
+      .flight-result { max-height: 42vh; overflow-y: auto; }
+      .flight-result-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    }
+
   </style>
 </head>
 <body>
@@ -522,6 +691,26 @@
         </div>
       </div>
     </section>
+
+
+    <!-- Hidden same-site data source. It executes index (10).html and publishes
+         its current normalized flight dataset to this avatar page. -->
+    <iframe
+      id="flightDataSource"
+      class="flight-source-frame"
+      src="./index%20(10).html?bridge=1"
+      title="KLIA flight data source"
+      aria-hidden="true"
+      tabindex="-1"
+    ></iframe>
+
+    <section id="flightResult" class="flight-result" aria-live="polite" aria-label="Verified flight information">
+      <div class="flight-result-head">
+        <h2 id="flightResultTitle" class="flight-result-title">Verified flight information</h2>
+        <span id="flightResultSource" class="flight-result-source">Source: index (10).html</span>
+      </div>
+      <div id="flightResultBody"></div>
+    </section>
   </main>
 
   <script type="module">
@@ -551,6 +740,15 @@
     const errorBox = document.getElementById("errorBox");
     const micStatus = document.getElementById("micStatus");
     const controlBar = document.querySelector(".control-bar");
+    const flightDataSource = document.getElementById("flightDataSource");
+    const flightResult = document.getElementById("flightResult");
+    const flightResultTitle = document.getElementById("flightResultTitle");
+    const flightResultBody = document.getElementById("flightResultBody");
+    const flightResultSource = document.getElementById("flightResultSource");
+
+    const FLIGHT_BRIDGE_STORAGE_KEY = "klia:flight-data:v1";
+    const FLIGHT_BRIDGE_MESSAGE_TYPE = "KLIA_FLIGHT_DATA_V1";
+    const FLIGHT_BRIDGE_CHANNEL = "klia-flight-data-v1";
 
     const params = new URLSearchParams(location.search);
     const SELF_TEST = params.has("selftest") && (location.hostname === "localhost" || location.hostname === "127.0.0.1" || location.protocol === "file:");
@@ -564,6 +762,17 @@
     let fitRaf = 0;
     let startGeneration = 0;
     let audioContext = null;
+
+    let availableFlights = [];
+    let flightDataUpdatedAt = 0;
+    let lastProcessedUserMessage = "";
+    let pendingCustomerMessage = "";
+    let lastResolvedFlightKey = "";
+    const customerFlightContext = {
+      flightNumber: "",
+      airline: "",
+      departureTime: ""
+    };
 
     function sleep(ms) {
       return new Promise(resolve => setTimeout(resolve, ms));
@@ -608,13 +817,20 @@
       const controlHeight = controlRect?.height || 0;
       const safeBottom = getSafeBottomPx();
       const controlGap = isShort ? 8 : isPhone ? 16 : 12;
+      const flightPanelRect = flightResult?.classList.contains("visible")
+        ? flightResult.getBoundingClientRect()
+        : null;
+      const flightPanelHeight = flightPanelRect?.height || 0;
+      const flightPanelGap = flightPanelHeight ? (isShort ? 6 : 10) : 0;
       /* Include the control bar's actual bottom offset as well as its height.
          This prevents the avatar's feet from slipping behind the controls on
          desktop/tablet layouts where the bar sits above the viewport edge. */
       const measuredBottomOffset = controlRect
         ? Math.max(0, stageHeight - controlRect.bottom)
         : safeBottom;
-      const reserveBottom = Math.ceil(measuredBottomOffset + controlHeight + controlGap);
+      const reserveBottom = Math.ceil(
+        measuredBottomOffset + controlHeight + controlGap + flightPanelHeight + flightPanelGap
+      );
 
       const availableWidth = Math.max(1, stageWidth - sideGutter * 2);
       const availableHeight = Math.max(1, stageHeight - topGutter - reserveBottom);
@@ -647,6 +863,380 @@
       cancelAnimationFrame(fitRaf);
       fitRaf = requestAnimationFrame(() => fitAvatarToViewport(target));
     }
+
+
+    /* =========================================================
+       FLIGHT LOOKUP / CUSTOMER INPUT VALIDATION
+    ========================================================= */
+
+    function normalizeLoose(value = "") {
+      return String(value)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim()
+        .replace(/\s+/g, " ");
+    }
+
+    function normalizeFlightNumber(value = "") {
+      return String(value).toUpperCase().replace(/[^A-Z0-9]/g, "");
+    }
+
+    function normalizeClock(value = "") {
+      const match = String(value).trim().match(/^(\d{1,2}):(\d{2})$/);
+      if (!match) return "";
+      const h = Number(match[1]);
+      const m = Number(match[2]);
+      if (h < 0 || h > 23 || m < 0 || m > 59) return "";
+      return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    }
+
+    function escapeFlightHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    function flightSafe(value, fallback = "TBA") {
+      const text = String(value ?? "").trim();
+      return text && text !== "—" ? text : fallback;
+    }
+
+    function numberToWords(n) {
+      const small = [
+        "zero","one","two","three","four","five","six","seven","eight","nine","ten",
+        "eleven","twelve","thirteen","fourteen","fifteen","sixteen","seventeen","eighteen","nineteen"
+      ];
+      const tens = {20:"twenty",30:"thirty",40:"forty",50:"fifty"};
+      if (n < 20) return small[n] || String(n);
+      const ten = Math.floor(n / 10) * 10;
+      const unit = n % 10;
+      return unit ? `${tens[ten]} ${small[unit]}` : tens[ten];
+    }
+
+    function spokenClockAliases(clock) {
+      const normalized = normalizeClock(clock);
+      if (!normalized) return [];
+      const [h24, minute] = normalized.split(":").map(Number);
+      const h12 = h24 % 12 || 12;
+      const suffix = h24 >= 12 ? "pm" : "am";
+      const minuteWords = minute === 0 ? "" : minute < 10 ? `oh ${numberToWords(minute)}` : numberToWords(minute);
+      const base = minuteWords ? `${numberToWords(h12)} ${minuteWords}` : `${numberToWords(h12)} o clock`;
+      return [base, `${base} ${suffix}`, `${numberToWords(h12)} ${numberToWords(minute)} ${suffix}`]
+        .map(normalizeLoose);
+    }
+
+    function extractKnownDepartureTime(text) {
+      const raw = String(text || "");
+      const numericPatterns = [
+        /\b([01]?\d|2[0-3])[:.]([0-5]\d)\s*(am|pm)?\b/i,
+        /\b(0?[1-9]|1[0-2])\s+([0-5]\d)\s*(am|pm)\b/i
+      ];
+
+      for (const pattern of numericPatterns) {
+        const match = raw.match(pattern);
+        if (!match) continue;
+        let hour = Number(match[1]);
+        const minute = Number(match[2]);
+        const suffix = String(match[3] || "").toLowerCase();
+        if (suffix === "am" && hour === 12) hour = 0;
+        if (suffix === "pm" && hour < 12) hour += 12;
+        const candidate = normalizeClock(`${hour}:${String(minute).padStart(2, "0")}`);
+        if (candidate) return candidate;
+      }
+
+      const loose = normalizeLoose(raw);
+      const knownTimes = [...new Set(availableFlights.map(f => normalizeClock(f.time)).filter(Boolean))];
+      for (const time of knownTimes) {
+        if (spokenClockAliases(time).some(alias => alias && loose.includes(alias))) return time;
+      }
+      return "";
+    }
+
+    function airlineAliases(airline = "") {
+      const base = normalizeLoose(airline);
+      const aliases = new Set([base]);
+      aliases.add(base.replace(/\bairlines\b/g, "airline"));
+      aliases.add(base.replace(/\bairline\b/g, "airlines"));
+      aliases.add(base.replace(/\bmalaysia\b/g, "").replace(/\s+/g, " ").trim());
+      if (base.includes("malaysia airlines")) aliases.add("mas");
+      if (base.includes("batik air")) aliases.add("batik air");
+      if (base.includes("airasia")) aliases.add("air asia");
+      return [...aliases].filter(alias => alias.length >= 3);
+    }
+
+    function extractKnownIdentifier(text) {
+      const compact = normalizeFlightNumber(text);
+      for (const flight of availableFlights) {
+        const flightNo = normalizeFlightNumber(flight.flight);
+        if (flightNo && compact.includes(flightNo)) {
+          return { flightNumber: flightNo, airline: "" };
+        }
+      }
+
+      const loose = normalizeLoose(text);
+      const airlines = [...new Set(availableFlights.map(f => flightSafe(f.airline, "")).filter(Boolean))];
+      for (const airline of airlines) {
+        if (airlineAliases(airline).some(alias => loose.includes(alias))) {
+          return { flightNumber: "", airline };
+        }
+      }
+      return { flightNumber: "", airline: "" };
+    }
+
+    function setFlightData(packet) {
+      const rows = Array.isArray(packet) ? packet : packet?.flights;
+      if (!Array.isArray(rows) || !rows.length) return false;
+      availableFlights = rows.map(row => ({ ...row }));
+      flightDataUpdatedAt = Number(packet?.updatedAt || Date.now());
+      flightResultSource.textContent = "Source: index (10).html";
+
+      if (pendingCustomerMessage) {
+        const pending = pendingCustomerMessage;
+        pendingCustomerMessage = "";
+        processCustomerFlightMessage(pending);
+      } else {
+        resolveCustomerFlight(true);
+      }
+      return true;
+    }
+
+    function readFlightDataDirectly() {
+      try {
+        const api = flightDataSource?.contentWindow?.KLIAFlightTracker;
+        if (api?.getFlights) {
+          return setFlightData({
+            flights: api.getFlights(),
+            updatedAt: Date.now()
+          });
+        }
+      } catch (error) {
+        console.debug("Direct flight source access unavailable:", error?.message || error);
+      }
+      return false;
+    }
+
+    function readFlightDataFromStorage() {
+      try {
+        const raw = localStorage.getItem(FLIGHT_BRIDGE_STORAGE_KEY);
+        if (!raw) return false;
+        return setFlightData(JSON.parse(raw));
+      } catch (error) {
+        console.debug("Stored flight data unavailable:", error?.message || error);
+        return false;
+      }
+    }
+
+    function showFlightPanel() {
+      flightResult.classList.add("visible");
+      requestAnimationFrame(() => scheduleAvatarFit(canvas.style.display === "none" ? video : canvas));
+    }
+
+    function hideFlightPanel() {
+      flightResult.classList.remove("visible", "verification-error");
+      requestAnimationFrame(() => scheduleAvatarFit(canvas.style.display === "none" ? video : canvas));
+    }
+
+    function renderVerifiedFlight(flight) {
+      const scheduled = flightSafe(flight.time, "TBA");
+      const estimated = flightSafe(flight.estimatedTime, "");
+      const departureSub = estimated && estimated !== scheduled ? `Estimated: ${escapeFlightHtml(estimated)}` : "";
+
+      flightResult.classList.remove("verification-error");
+      flightResultTitle.textContent = "Verified flight information";
+      flightResultBody.innerHTML = `
+        <div class="flight-result-grid">
+          <div class="flight-detail">
+            <span class="flight-detail-label">Departure Time</span>
+            <span class="flight-detail-value">${escapeFlightHtml(scheduled)}</span>
+            ${departureSub ? `<span class="flight-detail-subvalue">${departureSub}</span>` : ""}
+          </div>
+          <div class="flight-detail">
+            <span class="flight-detail-label">Check-in Time</span>
+            <span class="flight-detail-value">${escapeFlightHtml(flightSafe(flight.checkInTime))}</span>
+          </div>
+          <div class="flight-detail">
+            <span class="flight-detail-label">Flight / Airline</span>
+            <span class="flight-detail-value">${escapeFlightHtml(flightSafe(flight.flight))}</span>
+            <span class="flight-detail-subvalue">${escapeFlightHtml(flightSafe(flight.airline))}</span>
+          </div>
+          <div class="flight-detail">
+            <span class="flight-detail-label">Destination</span>
+            <span class="flight-detail-value">${escapeFlightHtml(flightSafe(flight.destination))}</span>
+          </div>
+          <div class="flight-detail">
+            <span class="flight-detail-label">Terminal</span>
+            <span class="flight-detail-value">${escapeFlightHtml(flightSafe(flight.terminal))}</span>
+          </div>
+          <div class="flight-detail">
+            <span class="flight-detail-label">Check-in Counter</span>
+            <span class="flight-detail-value">${escapeFlightHtml(flightSafe(flight.checkInCounter))}</span>
+          </div>
+          <div class="flight-detail">
+            <span class="flight-detail-label">Boarding Date</span>
+            <span class="flight-detail-value">${escapeFlightHtml(flightSafe(flight.boardingDate))}</span>
+          </div>
+          <div class="flight-detail">
+            <span class="flight-detail-label">Boarding Gate</span>
+            <span class="flight-detail-value">${escapeFlightHtml(flightSafe(flight.boardingGate))}</span>
+          </div>
+          <div class="flight-detail">
+            <span class="flight-detail-label">Arrival Gate</span>
+            <span class="flight-detail-value">${escapeFlightHtml(flightSafe(flight.arrivalGate))}</span>
+          </div>
+          <div class="flight-detail">
+            <span class="flight-detail-label">Baggage</span>
+            <span class="flight-detail-value">${escapeFlightHtml(flightSafe(flight.baggage))}</span>
+          </div>
+          <div class="flight-detail">
+            <span class="flight-detail-label">Status</span>
+            <span class="flight-detail-value flight-status-value">${escapeFlightHtml(flightSafe(flight.status))}</span>
+          </div>
+        </div>`;
+      showFlightPanel();
+    }
+
+    function renderVerificationIssue(message) {
+      flightResult.classList.add("verification-error");
+      flightResultTitle.textContent = "Flight details could not be verified";
+      flightResultBody.innerHTML = `<p class="flight-verification-message">${escapeFlightHtml(message)}</p>`;
+      showFlightPanel();
+    }
+
+    function resolveCustomerFlight(forceRefresh = false) {
+      if (!availableFlights.length) return;
+      const identifier = customerFlightContext.flightNumber || customerFlightContext.airline;
+      const departureTime = normalizeClock(customerFlightContext.departureTime);
+      if (!identifier || !departureTime) return;
+
+      const identifierMatches = availableFlights.filter(flight => {
+        if (customerFlightContext.flightNumber) {
+          return normalizeFlightNumber(flight.flight) === customerFlightContext.flightNumber;
+        }
+        return normalizeLoose(flight.airline) === normalizeLoose(customerFlightContext.airline);
+      });
+
+      const exactMatches = identifierMatches.filter(flight => normalizeClock(flight.time) === departureTime);
+      const contextKey = `${customerFlightContext.flightNumber}|${normalizeLoose(customerFlightContext.airline)}|${departureTime}`;
+
+      if (!forceRefresh && contextKey === lastResolvedFlightKey) return;
+      lastResolvedFlightKey = contextKey;
+
+      if (exactMatches.length === 1) {
+        renderVerifiedFlight(exactMatches[0]);
+        return;
+      }
+
+      if (exactMatches.length > 1) {
+        renderVerificationIssue(
+          `More than one flight matches ${identifier} at ${departureTime}. Please provide the flight number or destination to verify the correct flight.`
+        );
+        return;
+      }
+
+      if (identifierMatches.length) {
+        const sourceTimes = [...new Set(identifierMatches.map(f => flightSafe(f.time, "TBA")))].join(", ");
+        renderVerificationIssue(
+          `${identifier} is available in the flight source but the customer-provided departure time ${departureTime} does not match. Source departure time${identifierMatches.length > 1 ? "s are" : " is"}: ${sourceTimes}. Please recheck the departure time.`
+        );
+        return;
+      }
+
+      renderVerificationIssue(
+        `${identifier} at ${departureTime} could not be found in the current flight information. Please recheck the flight/airline number and departure time.`
+      );
+    }
+
+    function processCustomerFlightMessage(text) {
+      const content = String(text || "").trim();
+      if (!content) return;
+      if (!availableFlights.length) {
+        pendingCustomerMessage = content;
+        return;
+      }
+      if (content === lastProcessedUserMessage) return;
+      lastProcessedUserMessage = content;
+
+      const identifier = extractKnownIdentifier(content);
+      const departureTime = extractKnownDepartureTime(content);
+
+      if (identifier.flightNumber) {
+        if (identifier.flightNumber !== customerFlightContext.flightNumber) {
+          customerFlightContext.departureTime = departureTime || "";
+        }
+        customerFlightContext.flightNumber = identifier.flightNumber;
+        customerFlightContext.airline = "";
+      } else if (identifier.airline) {
+        if (normalizeLoose(identifier.airline) !== normalizeLoose(customerFlightContext.airline)) {
+          customerFlightContext.departureTime = departureTime || "";
+        }
+        customerFlightContext.airline = identifier.airline;
+        customerFlightContext.flightNumber = "";
+      }
+
+      if (departureTime) customerFlightContext.departureTime = departureTime;
+      resolveCustomerFlight();
+    }
+
+    function extractMessageText(message) {
+      if (!message) return "";
+      if (typeof message.content === "string") return message.content;
+      if (typeof message.text === "string") return message.text;
+      if (Array.isArray(message.content)) {
+        return message.content.map(part => typeof part === "string" ? part : part?.text || "").join(" ");
+      }
+      return "";
+    }
+
+    function handleConversationHistory(messages) {
+      if (!Array.isArray(messages)) return;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const message = messages[i];
+        const role = String(message?.role || message?.participant || "").toLowerCase();
+        if (role === "user" || role === "human") {
+          processCustomerFlightMessage(extractMessageText(message));
+          break;
+        }
+      }
+    }
+
+    // Public helper for manual integration/testing from the browser console or another script.
+    window.KLIAFlightLookup = Object.freeze({
+      getFlights: () => availableFlights.map(f => ({ ...f })),
+      getCustomerContext: () => ({ ...customerFlightContext }),
+      processCustomerMessage: processCustomerFlightMessage,
+      lookup: ({ flightNumber = "", airline = "", departureTime = "" } = {}) => {
+        customerFlightContext.flightNumber = normalizeFlightNumber(flightNumber);
+        customerFlightContext.airline = airline;
+        customerFlightContext.departureTime = normalizeClock(departureTime);
+        lastResolvedFlightKey = "";
+        resolveCustomerFlight(true);
+      },
+      hide: hideFlightPanel
+    });
+
+    // Read the first available copy immediately, then keep listening for updates.
+    readFlightDataFromStorage();
+
+    window.addEventListener("message", event => {
+      const packet = event?.data;
+      if (!packet || packet.type !== FLIGHT_BRIDGE_MESSAGE_TYPE) return;
+      if (location.protocol !== "file:" && event.origin !== location.origin) return;
+      setFlightData(packet);
+    });
+
+    if ("BroadcastChannel" in window) {
+      const channel = new BroadcastChannel(FLIGHT_BRIDGE_CHANNEL);
+      channel.addEventListener("message", event => {
+        if (event?.data?.type === FLIGHT_BRIDGE_MESSAGE_TYPE) setFlightData(event.data);
+      });
+    }
+
+    flightDataSource?.addEventListener("load", () => {
+      if (!readFlightDataDirectly()) readFlightDataFromStorage();
+    });
 
     function showError(message) {
       console.error("AvatarX:", message);
@@ -1065,6 +1655,13 @@
         });
       }
 
+      if (AnamEvent.MESSAGE_HISTORY_UPDATED) {
+        client.addListener(AnamEvent.MESSAGE_HISTORY_UPDATED, messages => {
+          if (generation !== startGeneration || isStopping) return;
+          handleConversationHistory(messages);
+        });
+      }
+
       client.addListener(AnamEvent.CONNECTION_CLOSED, (reason, details) => {
         if (generation !== startGeneration || isStopping) return;
         const normalCode = sdk?.ConnectionClosedCode?.NORMAL;
@@ -1191,6 +1788,7 @@
       const events = {
         CONNECTION_ESTABLISHED: "connection_established",
         SESSION_READY: "session_ready",
+        MESSAGE_HISTORY_UPDATED: "message_history_updated",
         CONNECTION_CLOSED: "connection_closed"
       };
 
@@ -1275,6 +1873,10 @@
     window.addEventListener("orientationchange", () => setTimeout(() => scheduleAvatarFit(canvas.style.display === "none" ? video : canvas), 80), { passive: true });
     window.visualViewport?.addEventListener("resize", () => scheduleAvatarFit(canvas.style.display === "none" ? video : canvas), { passive: true });
     window.visualViewport?.addEventListener("scroll", () => scheduleAvatarFit(canvas.style.display === "none" ? video : canvas), { passive: true });
+
+    // Retry direct bridge access in case the source iframe loads after module initialization.
+    setTimeout(() => { if (!availableFlights.length) readFlightDataDirectly(); }, 800);
+    setTimeout(() => { if (!availableFlights.length) readFlightDataDirectly(); }, 2000);
 
     if ("ResizeObserver" in window) {
       const resizeObserver = new ResizeObserver(() => scheduleAvatarFit(canvas.style.display === "none" ? video : canvas));
