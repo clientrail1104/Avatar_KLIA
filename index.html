@@ -742,6 +742,7 @@
 
     const params = new URLSearchParams(location.search);
     const SELF_TEST = params.has("selftest") && (location.hostname === "localhost" || location.hostname === "127.0.0.1" || location.protocol === "file:");
+    const FLIGHT_AUTOFILL_TEST = params.has("flighttest");
 
     let anamClient = null;
     let sdkModule = null;
@@ -819,7 +820,9 @@
     let userTranscriptBuffer = "";
     let lastTranscriptFlightNumber = "";
     const preloadedFlightDocuments = [];
+    const liveSiblingFrames = [];
     let siblingPreloadPromise = null;
+    let liveSiblingFramePromise = null;
 
     function firstFlightValue(source, aliases) {
       if (!source || typeof source !== "object") return "";
@@ -847,21 +850,52 @@
         .trim();
     }
 
-    function extractFlightNumberFromText(text) {
-      const value = String(text || "").toUpperCase();
-      if (!value.trim()) return "";
+    function normalizeSpokenFlightText(text) {
+      const digitWords = {
+        ZERO: "0", OH: "0", O: "0",
+        ONE: "1", TWO: "2", THREE: "3", FOUR: "4", FIVE: "5",
+        SIX: "6", SEVEN: "7", EIGHT: "8", NINE: "9"
+      };
 
-      // Common airline flight formats: MH123, MH 123, OD2303, AK 512, D7 123.
-      // Require at least one letter in the airline designator to avoid matching times/dates.
-      const matches = value.matchAll(/\b([A-Z0-9]{2,3})\s*[- ]?\s*(\d{1,4}[A-Z]?)\b/g);
+      return String(text || "")
+        .toUpperCase()
+        .replace(/[.,!?;:()\[\]{}]/g, " ")
+        .replace(/\b(ZERO|OH|ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE)\b/g, word => digitWords[word] || word)
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    function extractFlightNumberFromText(text) {
+      const value = normalizeSpokenFlightText(text);
+      if (!value) return "";
+
+      // Handles normal and chunked transcripts:
+      // MH123, MH 123, M H 123, M H 1 2 3, OD 2303, D 7 123.
+      // The designator must contain at least one letter so times and dates are ignored.
+      const pattern = /(?:^|\s)([A-Z0-9](?:\s*[A-Z0-9]){1,2})\s*[- ]?\s*((?:\d\s*){1,4}[A-Z]?)(?=\s|$)/g;
+      let match;
       let fallback = "";
-      for (const match of matches) {
-        const designator = match[1];
-        const candidate = `${designator}${match[2]}`;
+
+      while ((match = pattern.exec(value)) !== null) {
+        const designator = match[1].replace(/\s+/g, "");
+        const numberPart = match[2].replace(/\s+/g, "");
+        const candidate = `${designator}${numberPart}`;
+        if (!/[A-Z]/.test(designator)) continue;
+        if (/^(T|TERMINAL|GATE|COUNTER)$/i.test(designator)) continue;
+        if (!/^[A-Z0-9]{2,3}\d{1,4}[A-Z]?$/.test(candidate)) continue;
+        fallback = candidate;
+      }
+      if (fallback) return fallback;
+
+      // Compact fallback for STT engines that already return MH123 inside punctuation.
+      const compactMatches = value.matchAll(/\b([A-Z0-9]{2,3})[- ]?(\d{1,4}[A-Z]?)\b/g);
+      for (const compactMatch of compactMatches) {
+        const designator = compactMatch[1];
+        const candidate = `${designator}${compactMatch[2]}`;
         if (!/[A-Z]/.test(designator)) continue;
         if (/^(T|TERMINAL|GATE|COUNTER)$/i.test(designator)) continue;
         fallback = candidate;
-        if (/^[A-Z0-9]{2,3}\d{1,4}[A-Z]?$/.test(candidate)) return candidate;
+        break;
       }
       return fallback;
     }
@@ -977,23 +1011,28 @@
       return directNumber ? { flightNumber: directNumber } : {};
     }
 
-    function getCandidateCollections() {
+    function getWindowCandidateCollections(sourceWindow = window) {
       const collections = [];
+      try {
+        const windowCandidates = [
+          sourceWindow.FLIGHT_DATABASE,
+          sourceWindow.FLIGHTS,
+          sourceWindow.ALL_FLIGHTS,
+          sourceWindow.flightDatabase,
+          sourceWindow.allFlights,
+          sourceWindow.departures,
+          sourceWindow.flightList
+        ];
+        for (const candidate of windowCandidates) {
+          if (Array.isArray(candidate)) collections.push(candidate);
+          else if (candidate && typeof candidate === "object") collections.push(Object.values(candidate));
+        }
+      } catch {}
+      return collections;
+    }
 
-      const windowCandidates = [
-        window.FLIGHT_DATABASE,
-        window.FLIGHTS,
-        window.ALL_FLIGHTS,
-        window.flightDatabase,
-        window.allFlights,
-        window.departures,
-        window.flightList
-      ];
-
-      for (const candidate of windowCandidates) {
-        if (Array.isArray(candidate)) collections.push(candidate);
-        else if (candidate && typeof candidate === "object") collections.push(Object.values(candidate));
-      }
+    function getCandidateCollections() {
+      const collections = getWindowCandidateCollections(window);
 
       for (const key of FLIGHT_COLLECTION_KEYS) {
         const parsed = safeParseJson(localStorage.getItem(key));
@@ -1125,6 +1164,57 @@
       return null;
     }
 
+    function lookupFlightFromLiveSiblingFrames(requestedNumber) {
+      for (const iframe of liveSiblingFrames) {
+        try {
+          const doc = iframe.contentDocument;
+          if (doc) {
+            const record = extractFlightFromDocument(doc, requestedNumber);
+            if (record) return record;
+          }
+          const frameWindow = iframe.contentWindow;
+          for (const collection of getWindowCandidateCollections(frameWindow)) {
+            const record = findFlightRecord(collection, requestedNumber);
+            if (record) return record;
+          }
+        } catch (error) {
+          console.debug("Live sibling flight lookup skipped:", error);
+        }
+      }
+      return null;
+    }
+
+    function loadLiveSiblingFrame(url) {
+      return new Promise(resolve => {
+        try {
+          const iframe = document.createElement("iframe");
+          iframe.setAttribute("aria-hidden", "true");
+          iframe.tabIndex = -1;
+          iframe.style.cssText = "position:fixed;width:1px;height:1px;left:-9999px;top:-9999px;opacity:0;pointer-events:none;border:0;";
+          iframe.src = url;
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            if (!liveSiblingFrames.includes(iframe)) liveSiblingFrames.push(iframe);
+            resolve(iframe);
+          };
+          iframe.addEventListener("load", () => setTimeout(finish, 450), { once: true });
+          iframe.addEventListener("error", finish, { once: true });
+          document.body.appendChild(iframe);
+          setTimeout(finish, 5000);
+        } catch {
+          resolve(null);
+        }
+      });
+    }
+
+    async function preloadLiveSiblingFrames(urls) {
+      if (liveSiblingFramePromise) return liveSiblingFramePromise;
+      liveSiblingFramePromise = Promise.all(urls.map(url => loadLiveSiblingFrame(url)));
+      return liveSiblingFramePromise;
+    }
+
     async function preloadSiblingFlightPages() {
       if (siblingPreloadPromise) return siblingPreloadPromise;
       if (location.protocol === "file:") return [];
@@ -1145,6 +1235,7 @@
             console.debug(`Flight preload skipped for ${page}:`, error);
           }
         }
+        if (loaded.length) void preloadLiveSiblingFrames(loaded);
         return loaded;
       })();
 
@@ -1213,14 +1304,16 @@
 
       mergeFlightData({ flightNumber: requestedNumber }, { replaceOnNewFlight: true });
 
-      // Fastest path: a flight table preloaded when the page opened.
+      // Fastest paths: preloaded static markup or the live JS-rendered sibling page.
       const preloadedRecord = lookupFlightFromPreloadedDocuments(requestedNumber);
-      if (preloadedRecord) {
+      const liveRecord = lookupFlightFromLiveSiblingFrames(requestedNumber);
+      const immediateRecord = liveRecord || preloadedRecord;
+      if (immediateRecord) {
         const merged = {
-          ...preloadedRecord,
+          ...immediateRecord,
           ...seed,
           flightNumber: firstFlightValue(seed, FLIGHT_FIELDS.flightNumber) ||
-                        firstFlightValue(preloadedRecord, FLIGHT_FIELDS.flightNumber) ||
+                        firstFlightValue(immediateRecord, FLIGHT_FIELDS.flightNumber) ||
                         requestedNumber
         };
         return updateFlightFooter(merged, { resolve: false, replaceOnNewFlight: false });
@@ -1242,6 +1335,16 @@
       }
 
       askOtherWindowsForFlight(requestedNumber);
+
+      // If the sibling page is JavaScript-rendered, wait briefly for its hidden live frame.
+      try {
+        const loadedUrls = await preloadSiblingFlightPages();
+        if (loadedUrls?.length) await preloadLiveSiblingFrames(loadedUrls);
+        const renderedRecord = lookupFlightFromLiveSiblingFrames(requestedNumber);
+        if (renderedRecord && generation === flightLookupGeneration) {
+          return updateFlightFooter({ ...renderedRecord, ...seed }, { resolve: false, replaceOnNewFlight: false });
+        }
+      } catch {}
 
       const [siblingRecord, endpointRecord] = await Promise.all([
         lookupFlightFromSiblingPages(requestedNumber),
@@ -1285,6 +1388,7 @@
     window.receiveFlightNumber = receiveFlightNumber;
     window.setFlightNumber = receiveFlightNumber;
     window.lookupFlightNumber = receiveFlightNumber;
+    window.receiveUserTranscript = (text) => consumeUserTranscript(text, { reset: true });
 
     window.addEventListener("message", (event) => {
       const payload = event?.data;
@@ -1861,12 +1965,22 @@
         });
       }
 
+      // Start each customer utterance with a fresh transcript buffer.
+      if (AnamEvent.USER_SPEECH_STARTED) {
+        client.addListener(AnamEvent.USER_SPEECH_STARTED, () => {
+          if (generation !== startGeneration || isStopping) return;
+          userTranscriptBuffer = "";
+        });
+      }
+
       // Detect a spoken flight number directly from Anam's live user transcript.
       if (AnamEvent.MESSAGE_STREAM_EVENT_RECEIVED) {
         client.addListener(AnamEvent.MESSAGE_STREAM_EVENT_RECEIVED, (event) => {
           if (generation !== startGeneration || isStopping || !event) return;
-          const role = String(event.role || "").toLowerCase();
-          if (role === "user") consumeUserTranscript(event.content || event.text || "");
+          const role = String(event.role || event.source || "").toLowerCase();
+          const content = event.content || event.text || event.transcript || "";
+          const isPersona = ["persona", "assistant", "agent", "ai"].includes(role);
+          if (!isPersona && content) consumeUserTranscript(content);
         });
       }
 
@@ -1874,14 +1988,19 @@
       if (AnamEvent.MESSAGE_HISTORY_UPDATED) {
         client.addListener(AnamEvent.MESSAGE_HISTORY_UPDATED, (messages) => {
           if (generation !== startGeneration || isStopping || !Array.isArray(messages)) return;
+          let fallbackContent = "";
           for (let i = messages.length - 1; i >= 0; i--) {
             const message = messages[i];
-            const role = String(message?.role || "").toLowerCase();
-            if (role === "user") {
-              consumeUserTranscript(message?.content || message?.text || "", { reset: true });
-              break;
+            const role = String(message?.role || message?.source || "").toLowerCase();
+            const content = message?.content || message?.text || message?.transcript || "";
+            if (!fallbackContent && content) fallbackContent = content;
+            if (["user", "human", "customer"].includes(role) && content) {
+              consumeUserTranscript(content, { reset: true });
+              return;
             }
           }
+          // Some ElevenLabs bridges omit/rename the role. Scan the latest completed message as a fallback.
+          if (fallbackContent) consumeUserTranscript(fallbackContent, { reset: true });
         });
       }
 
@@ -2117,6 +2236,37 @@
     // Start caching the sibling flight table as soon as the page loads so spoken lookups are instant.
     void preloadSiblingFlightPages();
     applyInitialFlightData();
+
+    // Deterministic browser regression test. Production behavior is unchanged unless ?flighttest=1 is present.
+    if (FLIGHT_AUTOFILL_TEST) {
+      window.FLIGHT_DATABASE = [{
+        departureTime: "10:45",
+        estimatedDeparture: "10:55",
+        checkinTime: "07:45 - 09:45",
+        flightNumber: "MH123",
+        airline: "Malaysia Airlines",
+        destination: "Sydney",
+        terminal: "T1",
+        checkinCounter: "H01-H12",
+        boardingDate: "07 Sep 2026",
+        boardingGate: "C21",
+        arrivalGate: "A12",
+        baggage: "B7",
+        status: "BOARDING"
+      }];
+      const testSpeech = params.get("speech") || "my flight is M H one two three";
+      consumeUserTranscript(testSpeech, { reset: true });
+      setTimeout(() => {
+        const expected = normalizeFlightData(window.FLIGHT_DATABASE[0]);
+        const pass = Object.entries(FLIGHT_ELEMENT_IDS).every(([field, id]) => {
+          const actual = document.getElementById(id)?.textContent?.trim();
+          return actual === expected[field];
+        });
+        document.documentElement.dataset.flightAutofillTest = pass ? "PASS" : "FAIL";
+        console.log(`Flight autofill regression test: ${pass ? "PASS" : "FAIL"}`);
+      }, 50);
+    }
+
     requestAnimationFrame(syncFlightFooterHeight);
     setIdleUI();
     console.log(`AvatarX initialized${SELF_TEST ? " in local self-test mode" : ""}.`);
