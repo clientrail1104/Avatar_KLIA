@@ -487,6 +487,146 @@
       -webkit-user-drag: none;
     }
 
+
+    /* =========================
+       RESPONSIVE FLIGHT FOOTER
+       Displays the selected flight without inventing unavailable values.
+    ========================== */
+    :root {
+      --flight-footer-height: 0px;
+    }
+
+    .flight-footer {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 66;
+      width: 100%;
+      padding:
+        8px max(10px, env(safe-area-inset-right))
+        max(8px, env(safe-area-inset-bottom))
+        max(10px, env(safe-area-inset-left));
+      background: rgba(255, 255, 255, 0.94);
+      border-top: 1px solid rgba(0, 0, 0, 0.08);
+      box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.10);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      pointer-events: auto;
+    }
+
+    .flight-footer-grid {
+      display: grid;
+      grid-template-columns: repeat(13, minmax(92px, 1fr));
+      gap: 6px;
+      width: 100%;
+      margin: 0 auto;
+      align-items: stretch;
+    }
+
+    .flight-footer-item {
+      min-width: 0;
+      padding: 7px 8px;
+      border-radius: 10px;
+      background: rgba(246, 247, 249, 0.90);
+      border: 1px solid rgba(0, 0, 0, 0.05);
+      overflow: hidden;
+    }
+
+    .flight-footer-label {
+      display: block;
+      margin-bottom: 3px;
+      color: #737780;
+      font-size: clamp(8px, 0.66vw, 10px);
+      font-weight: 750;
+      line-height: 1.1;
+      letter-spacing: 0.015em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .flight-footer-value {
+      display: block;
+      color: #17181c;
+      font-size: clamp(10px, 0.78vw, 12px);
+      font-weight: 750;
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .flight-footer-value[data-field="status"] {
+      color: var(--success);
+    }
+
+    .control-bar {
+      bottom: calc(var(--flight-footer-height, 0px) + 12px) !important;
+    }
+
+    @media (max-width: 1100px) {
+      .flight-footer {
+        overflow-x: auto;
+        overscroll-behavior-x: contain;
+        scrollbar-width: thin;
+      }
+
+      .flight-footer-grid {
+        width: max-content;
+        min-width: 100%;
+        grid-template-columns: repeat(13, minmax(118px, 136px));
+      }
+
+      .flight-footer-label { font-size: 9px; }
+      .flight-footer-value { font-size: 11px; }
+    }
+
+    @media (max-width: 600px) {
+      .flight-footer {
+        padding-top: 7px;
+        padding-bottom: max(7px, env(safe-area-inset-bottom));
+      }
+
+      .flight-footer-grid {
+        grid-template-columns: repeat(13, 116px);
+        gap: 5px;
+      }
+
+      .flight-footer-item {
+        padding: 6px 7px;
+        border-radius: 9px;
+      }
+
+      .control-bar {
+        bottom: calc(var(--flight-footer-height, 0px) + 8px) !important;
+      }
+    }
+
+    @media (max-height: 540px) {
+      .flight-footer {
+        padding-top: 5px;
+        padding-bottom: max(5px, env(safe-area-inset-bottom));
+      }
+
+      .flight-footer-item {
+        padding-top: 4px;
+        padding-bottom: 4px;
+      }
+
+      .flight-footer-label {
+        margin-bottom: 2px;
+        font-size: 8px;
+      }
+
+      .flight-footer-value { font-size: 10px; }
+
+      .control-bar {
+        bottom: calc(var(--flight-footer-height, 0px) + 6px) !important;
+      }
+    }
+
   </style>
 </head>
 <body>
@@ -524,6 +664,26 @@
     </section>
   </main>
 
+
+  <footer id="flightFooter" class="flight-footer" aria-label="Flight information" aria-live="polite">
+    <div class="flight-footer-grid">
+      <div class="flight-footer-item"><span class="flight-footer-label">Departure Time</span><span id="flightDepartureTime" class="flight-footer-value" data-field="departureTime">—</span></div>
+      <div class="flight-footer-item"><span class="flight-footer-label">Estimated Departure</span><span id="flightEstimatedDeparture" class="flight-footer-value" data-field="estimatedDeparture">—</span></div>
+      <div class="flight-footer-item"><span class="flight-footer-label">Check-in Time</span><span id="flightCheckinTime" class="flight-footer-value" data-field="checkinTime">—</span></div>
+      <div class="flight-footer-item"><span class="flight-footer-label">Flight Number</span><span id="flightNumber" class="flight-footer-value" data-field="flightNumber">—</span></div>
+      <div class="flight-footer-item"><span class="flight-footer-label">Airline</span><span id="flightAirline" class="flight-footer-value" data-field="airline">—</span></div>
+      <div class="flight-footer-item"><span class="flight-footer-label">Destination</span><span id="flightDestination" class="flight-footer-value" data-field="destination">—</span></div>
+      <div class="flight-footer-item"><span class="flight-footer-label">Terminal</span><span id="flightTerminal" class="flight-footer-value" data-field="terminal">—</span></div>
+      <div class="flight-footer-item"><span class="flight-footer-label">Check-in Counter</span><span id="flightCheckinCounter" class="flight-footer-value" data-field="checkinCounter">—</span></div>
+      <div class="flight-footer-item"><span class="flight-footer-label">Boarding Date</span><span id="flightBoardingDate" class="flight-footer-value" data-field="boardingDate">—</span></div>
+      <div class="flight-footer-item"><span class="flight-footer-label">Boarding Gate</span><span id="flightBoardingGate" class="flight-footer-value" data-field="boardingGate">—</span></div>
+      <div class="flight-footer-item"><span class="flight-footer-label">Arrival Gate</span><span id="flightArrivalGate" class="flight-footer-value" data-field="arrivalGate">—</span></div>
+      <div class="flight-footer-item"><span class="flight-footer-label">Baggage</span><span id="flightBaggage" class="flight-footer-value" data-field="baggage">—</span></div>
+      <div class="flight-footer-item"><span class="flight-footer-label">Status</span><span id="flightStatus" class="flight-footer-value" data-field="status">—</span></div>
+    </div>
+  </footer>
+
+
   <script type="module">
     /*
       AvatarX production connection layer
@@ -551,6 +711,7 @@
     const errorBox = document.getElementById("errorBox");
     const micStatus = document.getElementById("micStatus");
     const controlBar = document.querySelector(".control-bar");
+    const flightFooter = document.getElementById("flightFooter");
 
     const params = new URLSearchParams(location.search);
     const SELF_TEST = params.has("selftest") && (location.hostname === "localhost" || location.hostname === "127.0.0.1" || location.protocol === "file:");
@@ -564,6 +725,132 @@
     let fitRaf = 0;
     let startGeneration = 0;
     let audioContext = null;
+
+
+    const FLIGHT_FIELDS = {
+      departureTime: ["departureTime", "departure_time", "scheduledDeparture", "scheduled_departure", "depTime"],
+      estimatedDeparture: ["estimatedDeparture", "estimated_departure", "estimatedDepartureTime", "estimated_departure_time", "etd"],
+      checkinTime: ["checkinTime", "checkInTime", "check_in_time", "checkin_time"],
+      flightNumber: ["flightNumber", "flight_number", "flight", "flightNo", "flight_no"],
+      airline: ["airline", "airlineName", "airline_name", "carrier"],
+      destination: ["destination", "destinationName", "destination_name", "to"],
+      terminal: ["terminal", "departureTerminal", "departure_terminal"],
+      checkinCounter: ["checkinCounter", "checkInCounter", "check_in_counter", "checkin_counter", "counter"],
+      boardingDate: ["boardingDate", "boarding_date", "date", "departureDate", "departure_date"],
+      boardingGate: ["boardingGate", "boarding_gate", "gate", "departureGate", "departure_gate"],
+      arrivalGate: ["arrivalGate", "arrival_gate"],
+      baggage: ["baggage", "baggageBelt", "baggage_belt", "belt", "carousel"],
+      status: ["status", "flightStatus", "flight_status"]
+    };
+
+    const FLIGHT_ELEMENT_IDS = {
+      departureTime: "flightDepartureTime",
+      estimatedDeparture: "flightEstimatedDeparture",
+      checkinTime: "flightCheckinTime",
+      flightNumber: "flightNumber",
+      airline: "flightAirline",
+      destination: "flightDestination",
+      terminal: "flightTerminal",
+      checkinCounter: "flightCheckinCounter",
+      boardingDate: "flightBoardingDate",
+      boardingGate: "flightBoardingGate",
+      arrivalGate: "flightArrivalGate",
+      baggage: "flightBaggage",
+      status: "flightStatus"
+    };
+
+    function firstFlightValue(source, aliases) {
+      if (!source || typeof source !== "object") return "";
+      for (const key of aliases) {
+        const value = source[key];
+        if (value !== undefined && value !== null && String(value).trim() !== "") {
+          return String(value).trim();
+        }
+      }
+      return "";
+    }
+
+    function normalizeFlightData(source = {}) {
+      const normalized = {};
+      for (const [field, aliases] of Object.entries(FLIGHT_FIELDS)) {
+        normalized[field] = firstFlightValue(source, aliases);
+      }
+      return normalized;
+    }
+
+    function updateFlightFooter(source = {}) {
+      const flight = normalizeFlightData(source);
+
+      for (const [field, elementId] of Object.entries(FLIGHT_ELEMENT_IDS)) {
+        const element = document.getElementById(elementId);
+        if (!element) continue;
+        const value = flight[field] || "—";
+        element.textContent = value;
+        element.title = value === "—" ? "" : value;
+      }
+
+      const statusElement = document.getElementById("flightStatus");
+      if (statusElement) {
+        const status = (flight.status || "").toLowerCase();
+        statusElement.style.color =
+          status.includes("cancel") || status.includes("delay")
+            ? "var(--danger)"
+            : status
+              ? "var(--success)"
+              : "";
+      }
+
+      syncFlightFooterHeight();
+    }
+
+    function syncFlightFooterHeight() {
+      const height = Math.ceil(flightFooter?.getBoundingClientRect().height || 0);
+      document.documentElement.style.setProperty("--flight-footer-height", `${height}px`);
+      scheduleAvatarFit(canvas.style.display === "none" ? video : canvas);
+    }
+
+    function readFlightFromUrl() {
+      const data = {};
+      for (const aliases of Object.values(FLIGHT_FIELDS)) {
+        for (const key of aliases) {
+          const value = params.get(key);
+          if (value !== null && value.trim() !== "") data[key] = value;
+        }
+      }
+      return data;
+    }
+
+    function readFlightFromStorage() {
+      const keys = ["selectedFlight", "selectedFlightData", "flightInfo", "kliaSelectedFlight"];
+      for (const key of keys) {
+        try {
+          const raw = localStorage.getItem(key);
+          if (!raw) continue;
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object") return parsed;
+        } catch (error) {
+          console.warn(`Unable to read ${key} from localStorage:`, error);
+        }
+      }
+      return {};
+    }
+
+    function applyInitialFlightData() {
+      const stored = readFlightFromStorage();
+      const fromUrl = readFlightFromUrl();
+      const supplied = window.FLIGHT_DATA && typeof window.FLIGHT_DATA === "object" ? window.FLIGHT_DATA : {};
+      updateFlightFooter({ ...stored, ...supplied, ...fromUrl });
+    }
+
+    window.updateFlightFooter = updateFlightFooter;
+
+    window.addEventListener("message", (event) => {
+      const payload = event?.data;
+      if (!payload || typeof payload !== "object") return;
+      const flight = payload.flight || payload.flightData || (payload.type === "flight-data" ? payload.data : null);
+      if (flight && typeof flight === "object") updateFlightFooter(flight);
+    });
+
 
     function sleep(ms) {
       return new Promise(resolve => setTimeout(resolve, ms));
@@ -1280,6 +1567,7 @@
       const resizeObserver = new ResizeObserver(() => scheduleAvatarFit(canvas.style.display === "none" ? video : canvas));
       resizeObserver.observe(document.documentElement);
       if (controlBar) resizeObserver.observe(controlBar);
+      if (flightFooter) resizeObserver.observe(flightFooter);
     }
 
     window.addEventListener("offline", () => {
@@ -1291,6 +1579,8 @@
       stopTransparentRenderer();
     });
 
+    applyInitialFlightData();
+    requestAnimationFrame(syncFlightFooterHeight);
     setIdleUI();
     console.log(`AvatarX initialized${SELF_TEST ? " in local self-test mode" : ""}.`);
   </script>
