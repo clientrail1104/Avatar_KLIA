@@ -818,7 +818,11 @@
     let flightLookupGeneration = 0;
     let sourcePollLastNumber = "";
     let userTranscriptBuffer = "";
+    let personaTranscriptBuffer = "";
+    let pendingVoiceFlightNumber = "";
+    let confirmedVoiceFlightNumber = "";
     let lastTranscriptFlightNumber = "";
+    const personaStreamMessages = new Map();
     const preloadedFlightDocuments = [];
     const liveSiblingFrames = [];
     let siblingPreloadPromise = null;
@@ -900,21 +904,97 @@
       return fallback;
     }
 
+    function stageVoiceFlightNumber(flightNumber) {
+      const normalized = normalizeFlightNumber(flightNumber);
+      if (!normalized) return "";
+
+      pendingVoiceFlightNumber = normalized;
+      lastTranscriptFlightNumber = normalized;
+
+      // Show only the candidate number while the voice agent is confirming it.
+      // Do not expose flight details until the persona confirms the number.
+      mergeFlightData({ flightNumber: normalized }, { replaceOnNewFlight: true });
+      return normalized;
+    }
+
     function consumeUserTranscript(content, { reset = false } = {}) {
       const chunk = String(content || "");
       if (!chunk) return;
 
       if (reset) userTranscriptBuffer = chunk;
-      else userTranscriptBuffer = `${userTranscriptBuffer} ${chunk}`.slice(-180);
+      else userTranscriptBuffer = `${userTranscriptBuffer} ${chunk}`.slice(-220);
 
       const detected = extractFlightNumberFromText(userTranscriptBuffer);
       const normalized = normalizeFlightNumber(detected);
-      if (!normalized || normalized === lastTranscriptFlightNumber) return;
+      if (!normalized || normalized === pendingVoiceFlightNumber) return;
 
-      lastTranscriptFlightNumber = normalized;
-      // Paint the flight number immediately before any asynchronous lookup.
-      mergeFlightData({ flightNumber: detected }, { replaceOnNewFlight: true });
-      void receiveFlightNumber(detected);
+      stageVoiceFlightNumber(normalized);
+    }
+
+    function isPersonaConfirmation(text, candidate, { completed = false } = {}) {
+      const raw = String(text || "").trim();
+      const normalizedText = normalizeSpokenFlightText(raw);
+      const number = normalizeFlightNumber(candidate);
+      if (!raw || !number || !completed) return false;
+
+      const spokenNumber = extractFlightNumberFromText(normalizedText);
+      const mentioned = normalizeFlightNumber(spokenNumber);
+      if (mentioned && mentioned !== number) return false;
+
+      // Do not populate while the persona is asking the customer to confirm.
+      const asksForConfirmation = /\b(can|could|would|please|may)\s+(you\s+)?confirm\b|\bis\s+(that|this)\s+correct\b|\bdid\s+you\s+say\b|\bis\s+your\s+flight(?:\s+number)?\b|\bwhat\s+is\s+your\s+flight(?:\s+number)?\b/i.test(raw);
+      if (asksForConfirmation) return false;
+
+      const strongConfirmation = /\bconfirm(?:ed|ing)?\b|\bverified\b|\bcorrect\b|\byour\s+flight(?:\s+number)?\s+(?:is|is\s+confirmed\s+as)\b|\bflight(?:\s+number)?\s+(?:is|confirmed\s+as)\b|\bi(?:'ve|\s+have)\s+(?:got|confirmed|found|verified)\s+(?:your\s+)?flight\b/i.test(raw);
+      const acknowledgement = /\b(got\s+it|gotcha|okay|ok|alright|perfect|thank\s+you)\b/i.test(raw);
+
+      // A completed persona statement that repeats the staged number counts as
+      // confirmation unless it is explicitly framed as a question/uncertainty.
+      // Weak acknowledgements only count when the agent repeats the number.
+      const uncertainty = /\b(maybe|perhaps|possibly|might|not\s+sure|unsure)\b/i.test(raw);
+      const repeatsCandidate = mentioned === number || normalizeFlightNumber(normalizedText).includes(number);
+      return !uncertainty && (strongConfirmation || repeatsCandidate || (acknowledgement && repeatsCandidate));
+    }
+
+    function confirmFlightNumber(flightNumber, { sourceText = "" } = {}) {
+      const number = normalizeFlightNumber(flightNumber || pendingVoiceFlightNumber);
+      if (!number) return Promise.resolve(null);
+
+      pendingVoiceFlightNumber = number;
+      confirmedVoiceFlightNumber = number;
+      sourcePollLastNumber = number;
+
+      // This is the single authoritative trigger for voice-confirmed autofill.
+      // The flight number is painted synchronously and cached/preloaded records
+      // fill all 13 fields immediately when available.
+      mergeFlightData({ flightNumber: number }, { replaceOnNewFlight: true });
+      document.documentElement.dataset.confirmedFlightNumber = number;
+      if (sourceText) document.documentElement.dataset.flightConfirmationText = String(sourceText).slice(0, 240);
+
+      try { localStorage.setItem("flightNumber", number); } catch {}
+      try { localStorage.setItem("confirmedFlightNumber", number); } catch {}
+
+      return resolveFlightNumber(number);
+    }
+
+    function consumePersonaTranscript(content, { completed = false, messageId = "", replace = false } = {}) {
+      const chunk = String(content || "");
+      if (!chunk) return;
+
+      const id = String(messageId || "persona-current");
+      const previous = replace ? "" : (personaStreamMessages.get(id) || "");
+      personaTranscriptBuffer = `${previous}${chunk}`.slice(-320);
+
+      if (completed) personaStreamMessages.delete(id);
+      else personaStreamMessages.set(id, personaTranscriptBuffer);
+
+      const candidateFromPersona = normalizeFlightNumber(extractFlightNumberFromText(personaTranscriptBuffer));
+      const candidate = candidateFromPersona || pendingVoiceFlightNumber;
+      if (!candidate) return;
+
+      if (isPersonaConfirmation(personaTranscriptBuffer, candidate, { completed })) {
+        void confirmFlightNumber(candidate, { sourceText: personaTranscriptBuffer });
+      }
     }
 
     function flightDataCompleteness(data) {
@@ -1388,7 +1468,10 @@
     window.receiveFlightNumber = receiveFlightNumber;
     window.setFlightNumber = receiveFlightNumber;
     window.lookupFlightNumber = receiveFlightNumber;
+    window.confirmFlightNumber = (number) => confirmFlightNumber(number);
+    window.confirmVoiceFlightNumber = (number) => confirmFlightNumber(number);
     window.receiveUserTranscript = (text) => consumeUserTranscript(text, { reset: true });
+    window.receivePersonaTranscript = (text) => consumePersonaTranscript(text, { completed: true });
 
     window.addEventListener("message", (event) => {
       const payload = event?.data;
@@ -1413,9 +1496,15 @@
         payload.flight_number ||
         payload.flightNo ||
         (payload.type === "flight-number" ? payload.value : "") ||
+        (payload.type === "flight-number-confirmed" ? payload.value : "") ||
+        (payload.type === "voice-flight-confirmed" ? payload.value : "") ||
         (payload.type === "flight-lookup-result" ? payload.flightNumber : "");
 
-      if (number) void receiveFlightNumber(number);
+      if (number && ["flight-number-confirmed", "voice-flight-confirmed"].includes(payload.type)) {
+        void confirmFlightNumber(number, { sourceText: payload.confirmationText || "postMessage confirmation" });
+      } else if (number) {
+        void receiveFlightNumber(number);
+      }
     });
 
     window.addEventListener("storage", (event) => {
@@ -1973,34 +2062,52 @@
         });
       }
 
-      // Detect a spoken flight number directly from Anam's live user transcript.
+      // Anam streams chunks from both user and persona. Stage the customer's
+      // flight number but populate the footer only after the persona completes
+      // a confirming utterance.
       if (AnamEvent.MESSAGE_STREAM_EVENT_RECEIVED) {
         client.addListener(AnamEvent.MESSAGE_STREAM_EVENT_RECEIVED, (event) => {
           if (generation !== startGeneration || isStopping || !event) return;
           const role = String(event.role || event.source || "").toLowerCase();
           const content = event.content || event.text || event.transcript || "";
-          const isPersona = ["persona", "assistant", "agent", "ai"].includes(role);
-          if (!isPersona && content) consumeUserTranscript(content);
+          const messageId = event.id || event.messageId || event.message_id || "";
+          const completed = Boolean(event.endOfSpeech || event.end_of_speech || event.isFinal || event.final);
+
+          if (["persona", "assistant", "agent", "ai"].includes(role)) {
+            if (content) consumePersonaTranscript(content, { completed, messageId });
+          } else if (["user", "human", "customer"].includes(role) || !role) {
+            if (content) consumeUserTranscript(content);
+          }
         });
       }
 
-      // Full-history fallback catches the final transcript if streaming chunks were missed.
+      // Completed history is the authoritative fallback. It lets us distinguish
+      // a confirmation statement from a persona question before triggering UI.
       if (AnamEvent.MESSAGE_HISTORY_UPDATED) {
         client.addListener(AnamEvent.MESSAGE_HISTORY_UPDATED, (messages) => {
           if (generation !== startGeneration || isStopping || !Array.isArray(messages)) return;
-          let fallbackContent = "";
+
+          // First stage the newest customer flight number.
           for (let i = messages.length - 1; i >= 0; i--) {
             const message = messages[i];
             const role = String(message?.role || message?.source || "").toLowerCase();
             const content = message?.content || message?.text || message?.transcript || "";
-            if (!fallbackContent && content) fallbackContent = content;
             if (["user", "human", "customer"].includes(role) && content) {
               consumeUserTranscript(content, { reset: true });
-              return;
+              break;
             }
           }
-          // Some ElevenLabs bridges omit/rename the role. Scan the latest completed message as a fallback.
-          if (fallbackContent) consumeUserTranscript(fallbackContent, { reset: true });
+
+          // Then inspect the newest completed persona message for confirmation.
+          for (let i = messages.length - 1; i >= 0; i--) {
+            const message = messages[i];
+            const role = String(message?.role || message?.source || "").toLowerCase();
+            const content = message?.content || message?.text || message?.transcript || "";
+            if (["persona", "assistant", "agent", "ai"].includes(role) && content) {
+              consumePersonaTranscript(content, { completed: true, messageId: message?.id || "history-persona", replace: true });
+              break;
+            }
+          }
         });
       }
 
@@ -2132,7 +2239,8 @@
         SESSION_READY: "session_ready",
         CONNECTION_CLOSED: "connection_closed",
         MESSAGE_STREAM_EVENT_RECEIVED: "message_stream_event_received",
-        MESSAGE_HISTORY_UPDATED: "message_history_updated"
+        MESSAGE_HISTORY_UPDATED: "message_history_updated",
+        USER_SPEECH_STARTED: "user_speech_started"
       };
 
       return {
@@ -2254,17 +2362,33 @@
         baggage: "B7",
         status: "BOARDING"
       }];
+
       const testSpeech = params.get("speech") || "my flight is M H one two three";
       consumeUserTranscript(testSpeech, { reset: true });
+
+      const detailsBeforeConfirmation = Object.entries(FLIGHT_ELEMENT_IDS)
+        .filter(([field]) => field !== "flightNumber")
+        .every(([, id]) => ["—", "TBA"].includes(document.getElementById(id)?.textContent?.trim()));
+
+      // Simulate Anam's chunked persona response. Only the final completed chunk
+      // is allowed to trigger the full 13-field flight population.
+      consumePersonaTranscript("Okay, your flight number is M ", { messageId: "test-persona-1" });
+      consumePersonaTranscript("H one two ", { messageId: "test-persona-1" });
+      consumePersonaTranscript("three. Confirmed.", { completed: true, messageId: "test-persona-1" });
+
       setTimeout(() => {
         const expected = normalizeFlightData(window.FLIGHT_DATABASE[0]);
-        const pass = Object.entries(FLIGHT_ELEMENT_IDS).every(([field, id]) => {
+        const allFieldsMatch = Object.entries(FLIGHT_ELEMENT_IDS).every(([field, id]) => {
           const actual = document.getElementById(id)?.textContent?.trim();
           return actual === expected[field];
         });
+        const confirmationRecorded = document.documentElement.dataset.confirmedFlightNumber === "MH123";
+        const pass = detailsBeforeConfirmation && allFieldsMatch && confirmationRecorded;
         document.documentElement.dataset.flightAutofillTest = pass ? "PASS" : "FAIL";
-        console.log(`Flight autofill regression test: ${pass ? "PASS" : "FAIL"}`);
-      }, 50);
+        document.documentElement.dataset.flightAutofillBeforeConfirm = detailsBeforeConfirmation ? "PASS" : "FAIL";
+        document.documentElement.dataset.flightAutofillAfterConfirm = allFieldsMatch ? "PASS" : "FAIL";
+        console.log(`Voice-confirmed flight autofill regression test: ${pass ? "PASS" : "FAIL"}`);
+      }, 80);
     }
 
     requestAnimationFrame(syncFlightFooterHeight);
