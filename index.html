@@ -816,6 +816,10 @@
     let lastRequestedFlightNumber = "";
     let flightLookupGeneration = 0;
     let sourcePollLastNumber = "";
+    let userTranscriptBuffer = "";
+    let lastTranscriptFlightNumber = "";
+    const preloadedFlightDocuments = [];
+    let siblingPreloadPromise = null;
 
     function firstFlightValue(source, aliases) {
       if (!source || typeof source !== "object") return "";
@@ -841,6 +845,42 @@
         .toUpperCase()
         .replace(/[^A-Z0-9]/g, "")
         .trim();
+    }
+
+    function extractFlightNumberFromText(text) {
+      const value = String(text || "").toUpperCase();
+      if (!value.trim()) return "";
+
+      // Common airline flight formats: MH123, MH 123, OD2303, AK 512, D7 123.
+      // Require at least one letter in the airline designator to avoid matching times/dates.
+      const matches = value.matchAll(/\b([A-Z0-9]{2,3})\s*[- ]?\s*(\d{1,4}[A-Z]?)\b/g);
+      let fallback = "";
+      for (const match of matches) {
+        const designator = match[1];
+        const candidate = `${designator}${match[2]}`;
+        if (!/[A-Z]/.test(designator)) continue;
+        if (/^(T|TERMINAL|GATE|COUNTER)$/i.test(designator)) continue;
+        fallback = candidate;
+        if (/^[A-Z0-9]{2,3}\d{1,4}[A-Z]?$/.test(candidate)) return candidate;
+      }
+      return fallback;
+    }
+
+    function consumeUserTranscript(content, { reset = false } = {}) {
+      const chunk = String(content || "");
+      if (!chunk) return;
+
+      if (reset) userTranscriptBuffer = chunk;
+      else userTranscriptBuffer = `${userTranscriptBuffer} ${chunk}`.slice(-180);
+
+      const detected = extractFlightNumberFromText(userTranscriptBuffer);
+      const normalized = normalizeFlightNumber(detected);
+      if (!normalized || normalized === lastTranscriptFlightNumber) return;
+
+      lastTranscriptFlightNumber = normalized;
+      // Paint the flight number immediately before any asynchronous lookup.
+      mergeFlightData({ flightNumber: detected }, { replaceOnNewFlight: true });
+      void receiveFlightNumber(detected);
     }
 
     function flightDataCompleteness(data) {
@@ -1077,6 +1117,40 @@
       return null;
     }
 
+    function lookupFlightFromPreloadedDocuments(requestedNumber) {
+      for (const doc of preloadedFlightDocuments) {
+        const record = extractFlightFromDocument(doc, requestedNumber);
+        if (record) return record;
+      }
+      return null;
+    }
+
+    async function preloadSiblingFlightPages() {
+      if (siblingPreloadPromise) return siblingPreloadPromise;
+      if (location.protocol === "file:") return [];
+
+      siblingPreloadPromise = (async () => {
+        const loaded = [];
+        for (const page of SIBLING_FLIGHT_PAGES) {
+          try {
+            const url = new URL(page, location.href);
+            if (url.href === location.href) continue;
+            const response = await fetch(url, { cache: "no-store", credentials: "same-origin" });
+            if (!response.ok) continue;
+            const html = await response.text();
+            const doc = new DOMParser().parseFromString(html, "text/html");
+            preloadedFlightDocuments.push(doc);
+            loaded.push(url.href);
+          } catch (error) {
+            console.debug(`Flight preload skipped for ${page}:`, error);
+          }
+        }
+        return loaded;
+      })();
+
+      return siblingPreloadPromise;
+    }
+
     async function lookupFlightFromSiblingPages(requestedNumber) {
       if (location.protocol === "file:") return null;
 
@@ -1139,6 +1213,19 @@
 
       mergeFlightData({ flightNumber: requestedNumber }, { replaceOnNewFlight: true });
 
+      // Fastest path: a flight table preloaded when the page opened.
+      const preloadedRecord = lookupFlightFromPreloadedDocuments(requestedNumber);
+      if (preloadedRecord) {
+        const merged = {
+          ...preloadedRecord,
+          ...seed,
+          flightNumber: firstFlightValue(seed, FLIGHT_FIELDS.flightNumber) ||
+                        firstFlightValue(preloadedRecord, FLIGHT_FIELDS.flightNumber) ||
+                        requestedNumber
+        };
+        return updateFlightFooter(merged, { resolve: false, replaceOnNewFlight: false });
+      }
+
       for (const collection of getCandidateCollections()) {
         const record = findFlightRecord(collection, target);
         if (record) {
@@ -1173,8 +1260,16 @@
     }
 
     function receiveFlightNumber(flightNumber) {
-      const number = String(flightNumber || "").trim();
+      const number = String(flightNumber || "").trim().toUpperCase();
       if (!number) return Promise.resolve(null);
+
+      // Update visible UI synchronously in the same JavaScript tick.
+      mergeFlightData({ flightNumber: number }, { replaceOnNewFlight: true });
+      sourcePollLastNumber = normalizeFlightNumber(number);
+
+      // Make the selection available to other same-origin pages immediately.
+      try { localStorage.setItem("flightNumber", number); } catch {}
+
       return resolveFlightNumber(number);
     }
 
@@ -1227,6 +1322,27 @@
         if (number) void receiveFlightNumber(number);
       }
     });
+
+    // Low-latency bridge for index(10).html or other same-origin flight pages.
+    try {
+      const flightChannel = new BroadcastChannel("klia-flight-selection");
+      flightChannel.addEventListener("message", (event) => {
+        const payload = event?.data;
+        if (!payload) return;
+        if (typeof payload === "string") {
+          const number = extractFlightNumberFromText(payload) || payload;
+          if (number) void receiveFlightNumber(number);
+          return;
+        }
+        if (typeof payload === "object") {
+          const flight = payload.flight || payload.flightData || payload.data;
+          if (flight && typeof flight === "object") updateFlightFooter(flight);
+          const number = payload.flightNumber || payload.flight_number || payload.flightNo;
+          if (number) void receiveFlightNumber(number);
+        }
+      });
+      window.__flightBroadcastChannel = flightChannel;
+    } catch {}
 
     /* Same-tab fallback: picks up a flight number written by the flight page or voice-agent integration. */
     setInterval(() => {
@@ -1745,6 +1861,30 @@
         });
       }
 
+      // Detect a spoken flight number directly from Anam's live user transcript.
+      if (AnamEvent.MESSAGE_STREAM_EVENT_RECEIVED) {
+        client.addListener(AnamEvent.MESSAGE_STREAM_EVENT_RECEIVED, (event) => {
+          if (generation !== startGeneration || isStopping || !event) return;
+          const role = String(event.role || "").toLowerCase();
+          if (role === "user") consumeUserTranscript(event.content || event.text || "");
+        });
+      }
+
+      // Full-history fallback catches the final transcript if streaming chunks were missed.
+      if (AnamEvent.MESSAGE_HISTORY_UPDATED) {
+        client.addListener(AnamEvent.MESSAGE_HISTORY_UPDATED, (messages) => {
+          if (generation !== startGeneration || isStopping || !Array.isArray(messages)) return;
+          for (let i = messages.length - 1; i >= 0; i--) {
+            const message = messages[i];
+            const role = String(message?.role || "").toLowerCase();
+            if (role === "user") {
+              consumeUserTranscript(message?.content || message?.text || "", { reset: true });
+              break;
+            }
+          }
+        });
+      }
+
       client.addListener(AnamEvent.CONNECTION_CLOSED, (reason, details) => {
         if (generation !== startGeneration || isStopping) return;
         const normalCode = sdk?.ConnectionClosedCode?.NORMAL;
@@ -1871,7 +2011,9 @@
       const events = {
         CONNECTION_ESTABLISHED: "connection_established",
         SESSION_READY: "session_ready",
-        CONNECTION_CLOSED: "connection_closed"
+        CONNECTION_CLOSED: "connection_closed",
+        MESSAGE_STREAM_EVENT_RECEIVED: "message_stream_event_received",
+        MESSAGE_HISTORY_UPDATED: "message_history_updated"
       };
 
       return {
@@ -1972,6 +2114,8 @@
       stopTransparentRenderer();
     });
 
+    // Start caching the sibling flight table as soon as the page loads so spoken lookups are instant.
+    void preloadSiblingFlightPages();
     applyInitialFlightData();
     requestAnimationFrame(syncFlightFooterHeight);
     setIdleUI();
