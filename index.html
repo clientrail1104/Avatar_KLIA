@@ -488,171 +488,6 @@
     }
 
 
-    /* =========================
-       ONE-SCREEN RESPONSIVE FLIGHT FOOTER
-       All 13 fields stay visible without horizontal scrolling.
-    ========================== */
-    :root {
-      --flight-footer-height: 0px;
-    }
-
-    .flight-footer {
-      position: fixed;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      z-index: 66;
-      width: 100%;
-      padding:
-        6px max(8px, env(safe-area-inset-right))
-        max(6px, env(safe-area-inset-bottom))
-        max(8px, env(safe-area-inset-left));
-      background: rgba(255, 255, 255, 0.95);
-      border-top: 1px solid rgba(0, 0, 0, 0.08);
-      box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.10);
-      backdrop-filter: blur(18px);
-      -webkit-backdrop-filter: blur(18px);
-      pointer-events: auto;
-      overflow: hidden;
-    }
-
-    .flight-footer-grid {
-      display: grid;
-      grid-template-columns: repeat(7, minmax(0, 1fr));
-      gap: 5px;
-      width: 100%;
-      max-width: 1600px;
-      margin: 0 auto;
-      align-items: stretch;
-    }
-
-    .flight-footer-item {
-      min-width: 0;
-      min-height: 38px;
-      padding: 5px 7px;
-      border-radius: 9px;
-      background: rgba(246, 247, 249, 0.92);
-      border: 1px solid rgba(0, 0, 0, 0.05);
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-    }
-
-    .flight-footer-label {
-      display: block;
-      margin-bottom: 2px;
-      color: #737780;
-      font-size: clamp(7px, 0.60vw, 9px);
-      font-weight: 800;
-      line-height: 1.05;
-      letter-spacing: 0.01em;
-      text-transform: uppercase;
-      white-space: normal;
-      overflow-wrap: anywhere;
-    }
-
-    .flight-footer-value {
-      display: block;
-      color: #17181c;
-      font-size: clamp(9px, 0.76vw, 12px);
-      font-weight: 800;
-      line-height: 1.1;
-      white-space: normal;
-      overflow-wrap: anywhere;
-    }
-
-    .flight-footer-value[data-field="status"] {
-      color: var(--success);
-    }
-
-    .control-bar {
-      bottom: calc(var(--flight-footer-height, 0px) + 8px) !important;
-    }
-
-    /* Tablet: 5 columns / 3 rows. */
-    @media (max-width: 1024px) {
-      .flight-footer-grid {
-        grid-template-columns: repeat(5, minmax(0, 1fr));
-        gap: 4px;
-      }
-
-      .flight-footer-item {
-        min-height: 34px;
-        padding: 4px 6px;
-      }
-
-      .flight-footer-label { font-size: 7.5px; }
-      .flight-footer-value { font-size: 10px; }
-    }
-
-    /* Phone: 3 columns / 5 rows. All data remains on the same screen. */
-    @media (max-width: 600px) {
-      .flight-footer {
-        padding:
-          5px max(5px, env(safe-area-inset-right))
-          max(5px, env(safe-area-inset-bottom))
-          max(5px, env(safe-area-inset-left));
-      }
-
-      .flight-footer-grid {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 3px;
-      }
-
-      .flight-footer-item {
-        min-height: 31px;
-        padding: 3px 5px;
-        border-radius: 7px;
-      }
-
-      .flight-footer-label {
-        margin-bottom: 1px;
-        font-size: 7px;
-        line-height: 1.0;
-      }
-
-      .flight-footer-value {
-        font-size: 9.5px;
-        line-height: 1.05;
-      }
-
-      .control-bar {
-        bottom: calc(var(--flight-footer-height, 0px) + 6px) !important;
-      }
-    }
-
-    /* Short/landscape phones: 4 columns / 4 rows to preserve avatar space. */
-    @media (max-height: 600px) and (max-width: 900px) {
-      .flight-footer-grid {
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 2px;
-      }
-
-      .flight-footer-item {
-        min-height: 27px;
-        padding: 2px 4px;
-        border-radius: 6px;
-      }
-
-      .flight-footer-label {
-        margin-bottom: 1px;
-        font-size: 6.5px;
-      }
-
-      .flight-footer-value {
-        font-size: 8.5px;
-      }
-
-      .control-bar {
-        bottom: calc(var(--flight-footer-height, 0px) + 4px) !important;
-      }
-    }
-
-    @media (max-width: 340px) {
-      .flight-footer-label { font-size: 6.3px; }
-      .flight-footer-value { font-size: 8.8px; }
-    }
 
   </style>
 </head>
@@ -690,27 +525,6 @@
       </div>
     </section>
   </main>
-
-
-  <footer id="flightFooter" class="flight-footer" aria-label="Flight information" aria-live="polite">
-    <div class="flight-footer-grid">
-      <div class="flight-footer-item"><span class="flight-footer-label">Departure Time</span><span id="flightDepartureTime" class="flight-footer-value" data-field="departureTime">—</span></div>
-      <div class="flight-footer-item"><span class="flight-footer-label">Estimated Departure</span><span id="flightEstimatedDeparture" class="flight-footer-value" data-field="estimatedDeparture">—</span></div>
-      <div class="flight-footer-item"><span class="flight-footer-label">Check-in Time</span><span id="flightCheckinTime" class="flight-footer-value" data-field="checkinTime">—</span></div>
-      <div class="flight-footer-item"><span class="flight-footer-label">Flight Number</span><span id="flightNumber" class="flight-footer-value" data-field="flightNumber">—</span></div>
-      <div class="flight-footer-item"><span class="flight-footer-label">Airline</span><span id="flightAirline" class="flight-footer-value" data-field="airline">—</span></div>
-      <div class="flight-footer-item"><span class="flight-footer-label">Destination</span><span id="flightDestination" class="flight-footer-value" data-field="destination">—</span></div>
-      <div class="flight-footer-item"><span class="flight-footer-label">Terminal</span><span id="flightTerminal" class="flight-footer-value" data-field="terminal">—</span></div>
-      <div class="flight-footer-item"><span class="flight-footer-label">Check-in Counter</span><span id="flightCheckinCounter" class="flight-footer-value" data-field="checkinCounter">—</span></div>
-      <div class="flight-footer-item"><span class="flight-footer-label">Boarding Date</span><span id="flightBoardingDate" class="flight-footer-value" data-field="boardingDate">—</span></div>
-      <div class="flight-footer-item"><span class="flight-footer-label">Boarding Gate</span><span id="flightBoardingGate" class="flight-footer-value" data-field="boardingGate">—</span></div>
-      <div class="flight-footer-item"><span class="flight-footer-label">Arrival Gate</span><span id="flightArrivalGate" class="flight-footer-value" data-field="arrivalGate">—</span></div>
-      <div class="flight-footer-item"><span class="flight-footer-label">Baggage</span><span id="flightBaggage" class="flight-footer-value" data-field="baggage">—</span></div>
-      <div class="flight-footer-item"><span class="flight-footer-label">Status</span><span id="flightStatus" class="flight-footer-value" data-field="status">—</span></div>
-    </div>
-  </footer>
-
-
   <script type="module">
     /*
       AvatarX production connection layer
@@ -738,7 +552,6 @@
     const errorBox = document.getElementById("errorBox");
     const micStatus = document.getElementById("micStatus");
     const controlBar = document.querySelector(".control-bar");
-    const flightFooter = document.getElementById("flightFooter");
 
     const params = new URLSearchParams(location.search);
     const SELF_TEST = params.has("selftest") && (location.hostname === "localhost" || location.hostname === "127.0.0.1" || location.protocol === "file:");
@@ -1056,8 +869,6 @@
     }
 
     function syncFlightFooterHeight() {
-      const height = Math.ceil(flightFooter?.getBoundingClientRect().height || 0);
-      document.documentElement.style.setProperty("--flight-footer-height", `${height}px`);
       scheduleAvatarFit(canvas.style.display === "none" ? video : canvas);
     }
 
@@ -2329,7 +2140,6 @@
       const resizeObserver = new ResizeObserver(() => scheduleAvatarFit(canvas.style.display === "none" ? video : canvas));
       resizeObserver.observe(document.documentElement);
       if (controlBar) resizeObserver.observe(controlBar);
-      if (flightFooter) resizeObserver.observe(flightFooter);
     }
 
     window.addEventListener("offline", () => {
